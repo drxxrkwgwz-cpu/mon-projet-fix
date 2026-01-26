@@ -9,12 +9,14 @@ import {
   TouchableOpacity,
   ImageBackground,
   Image,
+  ActivityIndicator,
 } from "react-native";
 import { Ionicons, FontAwesome5, MaterialIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { supabase } from "./src/lib/supabase";
 
 // === IMPORTS SCREENS ===
 import PlanningNavigator from "./PlanningNavigator";
@@ -24,6 +26,7 @@ import Recette from "./Recette";
 import Recuperation from "./Recuperation"; // FIX : Correct import
 import CoachOnboarding from "./CoachOnboarding"; // AJOUT
 import CoachDashboard from "./CoachDashboard";
+import AuthScreen from "./AuthScreen";
 
 // === ASSETS ===
 const BG = require("./assets/track.jpg");
@@ -271,6 +274,48 @@ function PillarDetail({ route }) {
 
 // === NAVIGATION ===
 export default function App() {
+  const [session, setSession] = useState(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        if (isMounted) {
+          setSession(data?.session ?? null);
+          setChecking(false);
+        }
+      })
+      .catch(() => {
+        if (isMounted) setChecking(false);
+      });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setChecking(false);
+    });
+
+    return () => {
+      isMounted = false;
+      data?.subscription?.unsubscribe();
+    };
+  }, []);
+
+  if (checking) {
+    return (
+      <View style={styles.loadingScreen}>
+        <ActivityIndicator size="large" color="#FFFFFF" />
+        <Text style={styles.loadingText}>Chargement…</Text>
+      </View>
+    );
+  }
+
+  if (!session) {
+    return <AuthScreen />;
+  }
+
   return (
     <NavigationContainer>
       <Stack.Navigator
@@ -299,6 +344,17 @@ export default function App() {
 // === STYLES ===
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  loadingScreen: {
+    flex: 1,
+    backgroundColor: "#0A0A0F",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loadingText: {
+    marginTop: 12,
+    color: "#FFFFFF",
+    fontWeight: "600",
+  },
   hamburger: { position: "absolute", top: 48, left: 18, zIndex: 10 },
   planningBox: {
     position: "absolute",
