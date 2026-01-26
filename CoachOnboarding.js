@@ -31,6 +31,7 @@ import {
   View,
 } from "react-native";
 import * as Haptics from "expo-haptics";
+import { supabase } from "./src/lib/supabase";
 
 const COLORS = {
   bg: "#F5F7FB",
@@ -589,38 +590,56 @@ export default function CoachOnboarding({ navigation, route, onDone }) {
       return;
     }
 
+    const { data, error: sessionError } = await supabase.auth.getSession();
+    const session = data?.session;
+
+    if (sessionError || !session) {
+      Alert.alert("Session introuvable", "Merci de te reconnecter pour sauvegarder ton profil.");
+      return;
+    }
+
+    const sortedDays = days
+      .slice()
+      .sort((a, b) => DAY_LABELS.findIndex((d) => d.key === a) - DAY_LABELS.findIndex((d) => d.key === b));
+
     const payload = {
-      coachCallsYou: coachCallsYouRef.current.trim(),
-      disciplines: selectedDisciplines.map((d) => d.label),
+      user_id: session.user.id,
+      coach_calls_you: coachCallsYouRef.current.trim(),
       level,
+      frequency_per_week: frequencyPerWeek,
+      duration_pref: durationPref,
+      training_pref: trainingPref,
+      days: sortedDays,
+      equipment,
+      health_constraints: healthConstraintsRef.current.trim(),
+      fatigue_baseline: fatigue,
+      goal: goalTitleRef.current.trim()
+        ? { title: goalTitleRef.current.trim(), dateText: goalDateTextRef.current.trim() || null }
+        : null,
+      other_prefs: otherPrefsRef.current.trim(),
+      disciplines: selectedDisciplines.map((d) => d.label),
       prs: Object.fromEntries(
         selectedDisciplines
           .map((d) => [d.label, (prsRef.current[d.id] || "").trim()])
           .filter(([, v]) => v.length > 0)
       ),
-      frequencyPerWeek,
-      durationPref,
-      trainingPref,
-      days: days
-        .slice()
-        .sort((a, b) => DAY_LABELS.findIndex((d) => d.key === a) - DAY_LABELS.findIndex((d) => d.key === b)),
-      equipment,
-      healthConstraints: healthConstraintsRef.current.trim(),
-      fatigue,
-      goal: goalTitleRef.current.trim()
-        ? { title: goalTitleRef.current.trim(), dateText: goalDateTextRef.current.trim() || null }
-        : null,
-      otherPrefs: otherPrefsRef.current.trim(),
     };
 
-    console.log("Coach onboarding payload:", payload);
+    const { error: upsertError } = await supabase
+      .from("profiles")
+      .upsert(payload, { onConflict: "user_id" });
+
+    if (upsertError) {
+      Alert.alert("Erreur", upsertError.message || "Impossible d'enregistrer le profil.");
+      return;
+    }
 
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Alert.alert("Profil créé", "Ton profil est prêt.");
 
     if (typeof onDone === "function") onDone(payload);
     if (navigation && navigation.replace) {
-      navigation.replace("CoachDashboard", { coachProfile: payload });
+      navigation.replace("CoachDashboard");
     }
   };
 

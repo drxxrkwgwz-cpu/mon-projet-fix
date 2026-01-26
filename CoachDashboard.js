@@ -14,7 +14,9 @@ import {
   UIManager,
   Vibration,
   View,
+  Alert,
 } from "react-native";
+import { supabase } from "./src/lib/supabase";
 
 const FULL_DAY_LABELS = {
   mon: "Lundi",
@@ -104,6 +106,7 @@ const performanceDisciplines = [
 ];
 
 const emptyCoachProfile = {
+  user_id: null,
   coachName: "",
   coachCallsYou: "",
   appellation: "",
@@ -126,13 +129,17 @@ const emptyCoachProfile = {
   performanceEntries: [],
 };
 
-export default function CoachDashboard({ route }) {
+export default function CoachDashboard({ navigation }) {
   const [isProfileExpanded, setIsProfileExpanded] = useState(false);
   const [planningTab, setPlanningTab] = useState("Semaine");
   const [routeState, setRouteState] = useState({ name: "Dashboard", params: {} });
   const [selectedMonthIndex, setSelectedMonthIndex] = useState(new Date().getMonth());
   const [selectedWeekIndex, setSelectedWeekIndex] = useState(0);
   const [selectedSession, setSelectedSession] = useState(null);
+  const [coachProfile, setCoachProfile] = useState(emptyCoachProfile);
+  const [workoutSessions, setWorkoutSessions] = useState([]);
+  const [feedbackHistory, setFeedbackHistory] = useState([]);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(true);
   const screenAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -151,18 +158,16 @@ export default function CoachDashboard({ route }) {
     }).start();
   }, [routeState.name, screenAnim]);
 
-  const coachProfile = route?.params?.coachProfile
-    ? { ...emptyCoachProfile, ...route.params.coachProfile }
-    : emptyCoachProfile;
-
+  const sessionMap = useMemo(() => buildSessionMap(workoutSessions || []), [workoutSessions]);
   const initialPerformanceEntries = useMemo(
-    () => coachProfile.performanceEntries || [],
-    [coachProfile.performanceEntries]
+    () => mapFeedbackToPerformanceEntries(feedbackHistory || []),
+    [feedbackHistory]
   );
   const [performanceEntries, setPerformanceEntries] = useState(initialPerformanceEntries);
-  const sessionMap = useMemo(() => buildSessionMap(coachProfile.sessions || []), [
-    coachProfile.sessions,
-  ]);
+
+  useEffect(() => {
+    setPerformanceEntries(initialPerformanceEntries);
+  }, [initialPerformanceEntries]);
 
   const profileSummary = useMemo(() => {
     const levelLabel = LEVEL_LABELS[coachProfile.level] || "À définir";
@@ -205,9 +210,76 @@ export default function CoachDashboard({ route }) {
   const selectedMonth = planningMonths[selectedMonthIndex];
   const selectedWeek = selectedMonth?.weeks[selectedWeekIndex] || selectedMonth?.weeks[0];
 
+  const hasProfile = Boolean(coachProfile?.user_id);
+
   useEffect(() => {
-    setPerformanceEntries(initialPerformanceEntries);
-  }, [initialPerformanceEntries]);
+    let isMounted = true;
+
+    const fetchData = async () => {
+      setIsLoadingProfile(true);
+      const { data, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !data?.session) {
+        if (isMounted) {
+          setCoachProfile(emptyCoachProfile);
+          setWorkoutSessions([]);
+          setFeedbackHistory([]);
+          setIsLoadingProfile(false);
+        }
+        return;
+      }
+
+      const userId = data.session.user.id;
+      const today = new Date();
+      const endDate = new Date();
+      endDate.setDate(today.getDate() + 6);
+      const startKey = formatISODate(today);
+      const endKey = formatISODate(endDate);
+
+      const [profileRes, workoutsRes, feedbackRes] = await Promise.all([
+        supabase.from("profiles").select("*").eq("user_id", userId).maybeSingle(),
+        supabase
+          .from("workouts")
+          .select("*")
+          .eq("user_id", userId)
+          .gte("date", startKey)
+          .lte("date", endKey),
+        supabase
+          .from("workouts_feedback")
+          .select("*")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false }),
+      ]);
+
+      if (profileRes.error && isMounted) {
+        Alert.alert("Erreur", profileRes.error.message || "Impossible de charger le profil.");
+      }
+
+      if (isMounted) {
+        setCoachProfile(mapProfileFromDb(profileRes.data));
+        setWorkoutSessions(mapWorkouts(workoutsRes.data));
+        setFeedbackHistory(feedbackRes.data || []);
+        setIsLoadingProfile(false);
+      }
+    };
+
+    fetchData();
+
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (!nextSession) {
+        setCoachProfile(emptyCoachProfile);
+        setWorkoutSessions([]);
+        setFeedbackHistory([]);
+        setIsLoadingProfile(false);
+        return;
+      }
+      fetchData();
+    });
+
+    return () => {
+      isMounted = false;
+      data?.subscription?.unsubscribe();
+    };
+  }, []);
 
   const toggleProfile = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -288,14 +360,39 @@ export default function CoachDashboard({ route }) {
         <DashboardHeader
           title="Coach IA"
           subtitle={`${goalTitle} · ${goalDate}`}
+          onLogout={() => supabase.auth.signOut()}
         />
 
-        <ProfileCard
-          coachProfile={coachProfile}
-          profileSummary={profileSummary}
-          expanded={isProfileExpanded}
-          onToggle={toggleProfile}
-        />
+        {isLoadingProfile ? (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator color="#2563EB" />
+            <Text style={styles.loadingText}>Chargement du profil...</Text>
+          </View>
+        ) : null}
+
+        {!isLoadingProfile && !hasProfile ? (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Bienvenue</Text>
+            <Text style={styles.cardSubtitle}>
+              Ton profil n'est pas encore créé. Lance l'onboarding pour démarrer.
+            </Text>
+            <PressableScale
+              style={styles.primaryButtonBlue}
+              onPress={() => navigation?.navigate("CoachOnboarding")}
+            >
+              <Text style={styles.primaryButtonBlueText}>Faire l'onboarding</Text>
+            </PressableScale>
+          </View>
+        ) : null}
+
+        {hasProfile ? (
+          <ProfileCard
+            coachProfile={coachProfile}
+            profileSummary={profileSummary}
+            expanded={isProfileExpanded}
+            onToggle={toggleProfile}
+          />
+        ) : null}
 
         <WeekOverview
           sessions={rollingWeek}
@@ -311,7 +408,7 @@ export default function CoachDashboard({ route }) {
   );
 }
 
-function DashboardHeader({ title, subtitle }) {
+function DashboardHeader({ title, subtitle, onLogout }) {
   return (
     <View style={styles.header}>
       <View style={styles.headerTextBlock}>
@@ -319,6 +416,9 @@ function DashboardHeader({ title, subtitle }) {
         <Text style={styles.headerSubtitle}>{subtitle}</Text>
         <Text style={styles.headerState}>Dernière mise à jour · à définir</Text>
       </View>
+      <Pressable onPress={onLogout} style={styles.logoutButton}>
+        <Text style={styles.logoutText}>Logout</Text>
+      </Pressable>
     </View>
   );
 }
@@ -1127,6 +1227,65 @@ function statusBadgeStyle(status) {
   return styles.statusBadgeSkipped;
 }
 
+function mapProfileFromDb(data) {
+  if (!data) return emptyCoachProfile;
+  return {
+    ...emptyCoachProfile,
+    user_id: data.user_id ?? null,
+    coachCallsYou: data.coach_calls_you || "",
+    level: data.level || "",
+    frequencyPerWeek: data.frequency_per_week || 0,
+    durationPref: data.duration_pref || "",
+    trainingPref: data.training_pref || "",
+    days: data.days || [],
+    equipment: data.equipment || [],
+    healthConstraints: data.health_constraints || "",
+    fatigue: data.fatigue_baseline || "",
+    goal: data.goal || { title: "", dateText: "" },
+    otherPrefs: data.other_prefs || "",
+    disciplines: data.disciplines || [],
+    prs: data.prs || {},
+  };
+}
+
+function mapWorkouts(workouts) {
+  if (!Array.isArray(workouts)) return [];
+  return workouts
+    .map((workout) => {
+      const dateKey =
+        workout.date || workout.scheduled_date || workout.workout_date || workout.session_date;
+      if (!dateKey) return null;
+      return {
+        id: workout.id || dateKey,
+        date: dateKey,
+        title: workout.title || workout.name || "Séance",
+        duration:
+          workout.duration ||
+          workout.duration_label ||
+          (workout.duration_minutes ? `${workout.duration_minutes} min` : "Durée à définir"),
+        objectives: workout.objectives || workout.focus || workout.tags || [],
+        description: workout.description || workout.notes || "Séance personnalisée.",
+        intensity: workout.intensity || workout.intensity_label || "À définir",
+        type: workout.type || workout.category || "À définir",
+        intervals: workout.intervals || workout.interval_data || null,
+      };
+    })
+    .filter(Boolean);
+}
+
+function mapFeedbackToPerformanceEntries(entries) {
+  if (!Array.isArray(entries)) return [];
+  return entries.map((entry, index) => {
+    const createdAt = entry.created_at ? new Date(entry.created_at) : null;
+    return {
+      id: entry.id || `feedback-${index}`,
+      discipline: entry.discipline || entry.title || "Feedback séance",
+      value: entry.rating ? `${entry.rating}/10` : entry.difficulty || entry.status || "—",
+      date: createdAt ? formatDate(createdAt) : "Date inconnue",
+    };
+  });
+}
+
 function buildRollingWeek(sessionMap) {
   const today = new Date();
   return Array.from({ length: 7 }, (_, index) => {
@@ -1335,6 +1494,18 @@ const styles = StyleSheet.create({
   headerTextBlock: {
     flex: 1,
     paddingRight: 12,
+  },
+  logoutButton: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "rgba(15,17,26,0.08)",
+  },
+  logoutText: {
+    color: "#0F1117",
+    fontWeight: "600",
+    fontSize: 12,
   },
   headerTitle: {
     fontSize: 32,
