@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -14,7 +15,9 @@ import {
   UIManager,
   Vibration,
   View,
+  Alert,
 } from "react-native";
+import { supabase } from "./src/lib/supabase";
 
 const FULL_DAY_LABELS = {
   mon: "Lundi",
@@ -104,6 +107,7 @@ const performanceDisciplines = [
 ];
 
 const emptyCoachProfile = {
+  user_id: null,
   coachName: "",
   coachCallsYou: "",
   appellation: "",
@@ -126,13 +130,21 @@ const emptyCoachProfile = {
   performanceEntries: [],
 };
 
-export default function CoachDashboard({ route }) {
+export default function CoachDashboard({ navigation }) {
   const [isProfileExpanded, setIsProfileExpanded] = useState(false);
   const [planningTab, setPlanningTab] = useState("Semaine");
   const [routeState, setRouteState] = useState({ name: "Dashboard", params: {} });
   const [selectedMonthIndex, setSelectedMonthIndex] = useState(new Date().getMonth());
   const [selectedWeekIndex, setSelectedWeekIndex] = useState(0);
   const [selectedSession, setSelectedSession] = useState(null);
+
+  const [sessionUserId, setSessionUserId] = useState(null);
+  const [coachProfile, setCoachProfile] = useState(emptyCoachProfile);
+  const [workoutSessions, setWorkoutSessions] = useState([]);
+  const [feedbackHistory, setFeedbackHistory] = useState([]);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(true);
+  const [isGeneratingWeek, setIsGeneratingWeek] = useState(false);
+
   const screenAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -145,24 +157,23 @@ export default function CoachDashboard({ route }) {
     screenAnim.setValue(0);
     Animated.timing(screenAnim, {
       toValue: 1,
-      duration: 280,
+      duration: 260,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
   }, [routeState.name, screenAnim]);
 
-  const coachProfile = route?.params?.coachProfile
-    ? { ...emptyCoachProfile, ...route.params.coachProfile }
-    : emptyCoachProfile;
+  const sessionMap = useMemo(() => buildSessionMap(workoutSessions || []), [workoutSessions]);
 
   const initialPerformanceEntries = useMemo(
-    () => coachProfile.performanceEntries || [],
-    [coachProfile.performanceEntries]
+    () => mapFeedbackToPerformanceEntries(feedbackHistory || []),
+    [feedbackHistory]
   );
   const [performanceEntries, setPerformanceEntries] = useState(initialPerformanceEntries);
-  const sessionMap = useMemo(() => buildSessionMap(coachProfile.sessions || []), [
-    coachProfile.sessions,
-  ]);
+
+  useEffect(() => {
+    setPerformanceEntries(initialPerformanceEntries);
+  }, [initialPerformanceEntries]);
 
   const profileSummary = useMemo(() => {
     const levelLabel = LEVEL_LABELS[coachProfile.level] || "À définir";
@@ -199,15 +210,89 @@ export default function CoachDashboard({ route }) {
   const chatLabel = coachName ? `Parler à ${coachName}` : "Parler au coach";
 
   const rollingWeek = useMemo(() => buildRollingWeek(sessionMap), [sessionMap]);
-
   const planningMonths = useMemo(() => buildYearPlanning(sessionMap), [sessionMap]);
 
   const selectedMonth = planningMonths[selectedMonthIndex];
   const selectedWeek = selectedMonth?.weeks[selectedWeekIndex] || selectedMonth?.weeks[0];
 
+  const hasProfile = Boolean(coachProfile?.user_id);
+  const isLoggedIn = Boolean(sessionUserId);
+
+  const fetchData = useCallback(async () => {
+    setIsLoadingProfile(true);
+
+    const { data, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !data?.session) {
+      setSessionUserId(null);
+      setCoachProfile(emptyCoachProfile);
+      setWorkoutSessions([]);
+      setFeedbackHistory([]);
+      setIsLoadingProfile(false);
+      return;
+    }
+
+    const userId = data.session.user.id;
+    setSessionUserId(userId);
+
+    const today = new Date();
+    const endDate = new Date();
+    endDate.setDate(today.getDate() + 6);
+    const startKey = formatISODate(today);
+    const endKey = formatISODate(endDate);
+
+    const [profileRes, workoutsRes, feedbackRes] = await Promise.all([
+      supabase.from("profiles").select("*").eq("user_id", userId).maybeSingle(),
+      supabase
+        .from("workouts")
+        .select("*")
+        .eq("user_id", userId)
+        .gte("date", startKey)
+        .lte("date", endKey),
+      supabase
+        .from("workouts_feedback")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(200),
+    ]);
+
+    if (profileRes.error) {
+      Alert.alert("Erreur", profileRes.error.message || "Impossible de charger le profil.");
+    }
+
+    setCoachProfile(mapProfileFromDb(profileRes.data));
+    setWorkoutSessions(mapWorkouts(workoutsRes.data));
+    setFeedbackHistory(feedbackRes.data || []);
+    setIsLoadingProfile(false);
+  }, []);
+
   useEffect(() => {
-    setPerformanceEntries(initialPerformanceEntries);
-  }, [initialPerformanceEntries]);
+    let isMounted = true;
+
+    const run = async () => {
+      if (!isMounted) return;
+      await fetchData();
+    };
+
+    run();
+
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (!nextSession) {
+        setSessionUserId(null);
+        setCoachProfile(emptyCoachProfile);
+        setWorkoutSessions([]);
+        setFeedbackHistory([]);
+        setIsLoadingProfile(false);
+        return;
+      }
+      fetchData();
+    });
+
+    return () => {
+      isMounted = false;
+      data?.subscription?.unsubscribe();
+    };
+  }, [fetchData]);
 
   const toggleProfile = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -223,6 +308,73 @@ export default function CoachDashboard({ route }) {
     setSelectedSession(session);
     openRoute("SessionDetail");
   };
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await supabase.auth.signOut();
+      setSessionUserId(null);
+      setCoachProfile(emptyCoachProfile);
+      setWorkoutSessions([]);
+      setFeedbackHistory([]);
+      setSelectedSession(null);
+      setRouteState({ name: "Dashboard", params: {} });
+    } catch (e) {
+      Alert.alert("Erreur", e?.message || "Impossible de se déconnecter.");
+    }
+  }, []);
+
+  const handleGoLogin = useCallback(() => {
+    if (navigation?.navigate) navigation.navigate("Auth");
+    else Alert.alert("Connexion", "Ajoute une route 'Auth' dans ta navigation.");
+  }, [navigation]);
+
+  const handleGenerateWeek = useCallback(async () => {
+    if (!isLoggedIn) {
+      Alert.alert("Connexion requise", "Connecte-toi pour générer une semaine.");
+      return;
+    }
+
+    try {
+      setIsGeneratingWeek(true);
+
+      const freq = coachProfile?.frequencyPerWeek ? coachProfile.frequencyPerWeek : 4;
+
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !sessionData?.session) {
+        Alert.alert(
+          "Connexion requise",
+          "Ta session est vide/expirée. Fais Logout puis reconnecte-toi."
+        );
+        return;
+      }
+
+      const { data, error } = await supabase.functions.invoke("generate_week", {
+        body: { frequencyPerWeek: freq },
+      });
+
+      if (error) {
+        Alert.alert(
+          "Erreur génération",
+          `${error.message}
+status=${error?.context?.status}
+body=${String(error?.context?.body || "")}`
+        );
+        return;
+      }
+
+      if (data && data.success === false) {
+        Alert.alert("Erreur génération", data?.error || "Erreur côté serveur.");
+        return;
+      }
+
+      await fetchData();
+      Alert.alert("OK", "Semaine générée et enregistrée.");
+    } catch (e) {
+      Alert.alert("Erreur", e?.message || "Erreur inconnue");
+    } finally {
+      setIsGeneratingWeek(false);
+    }
+  }, [coachProfile, fetchData, isLoggedIn]);
 
   const screenStyle = {
     opacity: screenAnim,
@@ -273,7 +425,12 @@ export default function CoachDashboard({ route }) {
   if (routeState.name === "SessionDetail" && selectedSession) {
     return (
       <Animated.View style={[styles.screenWrapper, screenStyle]}>
-        <SessionDetailScreen session={selectedSession} onBack={() => openRoute("Dashboard")} />
+        <SessionDetailScreen
+          session={selectedSession}
+          onBack={() => openRoute("Dashboard")}
+          userId={sessionUserId}
+          onSaved={fetchData}
+        />
       </Animated.View>
     );
   }
@@ -288,37 +445,92 @@ export default function CoachDashboard({ route }) {
         <DashboardHeader
           title="Coach IA"
           subtitle={`${goalTitle} · ${goalDate}`}
+          isLoggedIn={isLoggedIn}
+          onLogout={handleLogout}
         />
 
-        <ProfileCard
-          coachProfile={coachProfile}
-          profileSummary={profileSummary}
-          expanded={isProfileExpanded}
-          onToggle={toggleProfile}
-        />
+        {isLoadingProfile ? (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator color="#2563EB" />
+            <Text style={styles.loadingText}>Chargement...</Text>
+          </View>
+        ) : null}
+
+        {!isLoadingProfile && !isLoggedIn ? (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Connexion</Text>
+            <Text style={styles.cardSubtitle}>
+              Connecte-toi pour retrouver ton profil, tes séances et ta progression.
+            </Text>
+            <PressableScale style={styles.primaryButtonBlue} onPress={handleGoLogin}>
+              <Text style={styles.primaryButtonBlueText}>Se connecter</Text>
+            </PressableScale>
+          </View>
+        ) : null}
+
+        {!isLoadingProfile && isLoggedIn && !hasProfile ? (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Bienvenue</Text>
+            <Text style={styles.cardSubtitle}>
+              Ton profil n'est pas encore créé. Lance l'onboarding pour démarrer.
+            </Text>
+            <PressableScale
+              style={styles.primaryButtonBlue}
+              onPress={() => navigation?.navigate?.("CoachOnboarding")}
+            >
+              <Text style={styles.primaryButtonBlueText}>Faire l'onboarding</Text>
+            </PressableScale>
+          </View>
+        ) : null}
+
+        {isLoggedIn && hasProfile ? (
+          <ProfileCard
+            coachProfile={coachProfile}
+            profileSummary={profileSummary}
+            expanded={isProfileExpanded}
+            onToggle={toggleProfile}
+          />
+        ) : null}
 
         <WeekOverview
           sessions={rollingWeek}
           onOpenPlanning={() => openRoute("Planning")}
           onOpenSession={handleOpenSession}
+          onGenerateWeek={handleGenerateWeek}
+          isGeneratingWeek={isGeneratingWeek}
+          isLoggedIn={isLoggedIn}
         />
 
         <ProgressBlock onOpenProgress={() => openRoute("Progression")} />
 
-        <PrimaryCTA label={chatLabel} onPress={() => openRoute("Chat")} />
+        <PrimaryCTA
+          label={isLoggedIn ? chatLabel : "Connexion requise"}
+          onPress={() => {
+            if (!isLoggedIn) {
+              Alert.alert("Connexion requise", "Connecte-toi pour accéder au chat.");
+              return;
+            }
+            openRoute("Chat");
+          }}
+        />
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function DashboardHeader({ title, subtitle }) {
+function DashboardHeader({ title, subtitle, isLoggedIn, onLogout }) {
   return (
     <View style={styles.header}>
       <View style={styles.headerTextBlock}>
         <Text style={styles.headerTitle}>{title}</Text>
         <Text style={styles.headerSubtitle}>{subtitle}</Text>
-        <Text style={styles.headerState}>Dernière mise à jour · à définir</Text>
+        <Text style={styles.headerState}>{isLoggedIn ? "Connecté" : "Non connecté"}</Text>
       </View>
+      {isLoggedIn ? (
+        <Pressable onPress={onLogout} style={styles.logoutButton}>
+          <Text style={styles.logoutText}>Logout</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -364,10 +576,7 @@ function ProfileCard({ coachProfile, profileSummary, expanded, onToggle }) {
             label="Contraintes santé"
             value={coachProfile.healthConstraints || "Aucune précisée"}
           />
-          <InfoLine
-            label="Autres préférences"
-            value={coachProfile.otherPrefs || "Aucune précisée"}
-          />
+          <InfoLine label="Autres préférences" value={coachProfile.otherPrefs || "Aucune précisée"} />
 
           <View style={styles.sectionDivider} />
           <Text style={styles.sectionHeader}>PRs clés</Text>
@@ -394,7 +603,14 @@ function ProfileCard({ coachProfile, profileSummary, expanded, onToggle }) {
   );
 }
 
-function WeekOverview({ sessions, onOpenPlanning, onOpenSession }) {
+function WeekOverview({
+  sessions,
+  onOpenPlanning,
+  onOpenSession,
+  onGenerateWeek,
+  isGeneratingWeek,
+  isLoggedIn,
+}) {
   return (
     <View style={styles.card}>
       <View style={styles.cardHeaderRow}>
@@ -404,6 +620,7 @@ function WeekOverview({ sessions, onOpenPlanning, onOpenSession }) {
         </View>
       </View>
       <Text style={styles.cardSubtitle}>Planning automatique à partir d'aujourd'hui.</Text>
+
       <View style={styles.weekRow}>
         {sessions.map((session) => (
           <PressableScale
@@ -422,11 +639,14 @@ function WeekOverview({ sessions, onOpenPlanning, onOpenSession }) {
                 </View>
               ) : null}
             </View>
+
             <View style={statusBadgeStyle(session.status)}>
               <Text style={styles.statusText}>{session.status}</Text>
             </View>
+
             <Text style={styles.weekTitle}>{session.title}</Text>
             <Text style={styles.weekMeta}>{session.duration}</Text>
+
             <View style={styles.tagRow}>
               {session.focus.map((tag) => (
                 <View key={tag} style={styles.tagPill}>
@@ -437,6 +657,22 @@ function WeekOverview({ sessions, onOpenPlanning, onOpenSession }) {
           </PressableScale>
         ))}
       </View>
+
+      <PressableScale
+        style={styles.primaryButtonBlue}
+        onPress={() => {
+          if (!isLoggedIn) {
+            Alert.alert("Connexion requise", "Connecte-toi pour générer une semaine.");
+            return;
+          }
+          onGenerateWeek();
+        }}
+      >
+        <Text style={styles.primaryButtonBlueText}>
+          {isGeneratingWeek ? "Génération..." : "Générer ma semaine"}
+        </Text>
+      </PressableScale>
+
       <PressableScale style={styles.primaryButton} onPress={onOpenPlanning}>
         <Text style={styles.primaryButtonText}>Voir le planning</Text>
       </PressableScale>
@@ -462,6 +698,7 @@ function PlanningScreen({
     <SafeAreaView style={styles.safeArea}>
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
         <ScreenHeader title="Planning" onBack={onBack} />
+
         <View style={styles.segmentedControl}>
           {planningTabs.map((tab) => (
             <PressableScale
@@ -470,9 +707,7 @@ function PlanningScreen({
               onPress={() => onTabChange(tab)}
             >
               <Text
-                style={
-                  tab === planningTab ? styles.segmentedActiveText : styles.segmentedInactiveText
-                }
+                style={tab === planningTab ? styles.segmentedActiveText : styles.segmentedInactiveText}
               >
                 {tab}
               </Text>
@@ -482,7 +717,7 @@ function PlanningScreen({
 
         <View style={styles.sectionBlock}>
           <Text style={styles.sectionHeader}>Mois de l'année</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always">
             <View style={styles.monthRow}>
               {months.map((month, index) => (
                 <PressableScale
@@ -493,13 +728,7 @@ function PlanningScreen({
                     onSelectWeek(0);
                   }}
                 >
-                  <Text
-                    style={
-                      index === selectedMonthIndex
-                        ? styles.monthChipTextActive
-                        : styles.monthChipText
-                    }
-                  >
+                  <Text style={index === selectedMonthIndex ? styles.monthChipTextActive : styles.monthChipText}>
                     {month.label}
                   </Text>
                 </PressableScale>
@@ -518,21 +747,11 @@ function PlanningScreen({
                   style={index === selectedWeekIndex ? styles.weekCardActive : styles.weekCardLarge}
                   onPress={() => onSelectWeek(index)}
                 >
-                  <Text
-                    style={
-                      index === selectedWeekIndex
-                        ? styles.weekCardTitleActive
-                        : styles.weekCardTitle
-                    }
-                  >
+                  <Text style={index === selectedWeekIndex ? styles.weekCardTitleActive : styles.weekCardTitle}>
                     {week.label}
                   </Text>
                   <Text
-                    style={
-                      index === selectedWeekIndex
-                        ? styles.weekCardSubtitleActive
-                        : styles.weekCardSubtitle
-                    }
+                    style={index === selectedWeekIndex ? styles.weekCardSubtitleActive : styles.weekCardSubtitle}
                   >
                     {week.range}
                   </Text>
@@ -547,6 +766,7 @@ function PlanningScreen({
           <Text style={styles.cardSubtitle}>
             {weekData?.range || "Sélectionne une semaine pour voir les détails."}
           </Text>
+
           <View style={styles.sessionGrid}>
             {weekData?.sessions.map((session) => (
               <PressableScale
@@ -563,8 +783,10 @@ function PlanningScreen({
                     <Text style={styles.badgeText}>{session.status}</Text>
                   </View>
                 </View>
+
                 <Text style={styles.sessionCardTitle}>{session.title}</Text>
                 <Text style={styles.sessionCardMeta}>{session.duration}</Text>
+
                 <View style={styles.tagRow}>
                   {session.focus.map((tag) => (
                     <View key={tag} style={styles.tagPillMuted}>
@@ -595,13 +817,9 @@ function ProgressionScreen({ onBack, performanceEntries, onAddPerformance }) {
   const monthOptions = useMemo(() => buildNumberOptions(1, 12), []);
   const yearOptions = useMemo(() => buildYearOptions(), []);
 
-  const entriesForDiscipline = performanceEntries.filter(
-    (entry) => entry.discipline === discipline.label
-  );
+  const entriesForDiscipline = performanceEntries.filter((entry) => entry.discipline === discipline.label);
   const chartLabels = entriesForDiscipline.map((entry) => entry.date);
-  const chartValues = entriesForDiscipline.map((entry) =>
-    parseNumericValue(entry.value, discipline.unit)
-  );
+  const chartValues = entriesForDiscipline.map((entry) => parseNumericValue(entry.value, discipline.unit));
 
   const handleSubmit = () => {
     if (!performanceValue.trim()) return;
@@ -618,12 +836,13 @@ function ProgressionScreen({ onBack, performanceEntries, onAddPerformance }) {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="always">
         <ScreenHeader title="Progression" onBack={onBack} />
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Ajouter une performance</Text>
           <Text style={styles.cardSubtitle}>Les graphiques se mettent à jour instantanément.</Text>
+
           <View style={styles.chipRow}>
             {performanceDisciplines.map((item) => (
               <PressableScale
@@ -681,11 +900,17 @@ function ProgressionScreen({ onBack, performanceEntries, onAddPerformance }) {
               onChangeText={setPerformanceValue}
               style={styles.input}
               placeholderTextColor="#64748B"
+              autoCorrect={false}
+              autoCapitalize="none"
+              keyboardType={discipline.unit === "min:s" ? "default" : "numeric"}
+              returnKeyType="done"
+              blurOnSubmit={false}
             />
             <View style={styles.unitBadge}>
               <Text style={styles.unitBadgeText}>{discipline.unit}</Text>
             </View>
           </View>
+
           <PressableScale style={styles.primaryButtonBlue} onPress={handleSubmit}>
             <Text style={styles.primaryButtonBlueText}>Ajouter</Text>
           </PressableScale>
@@ -696,12 +921,11 @@ function ProgressionScreen({ onBack, performanceEntries, onAddPerformance }) {
             <Text style={styles.cardTitle}>Courbe principale</Text>
             <Text style={styles.cardSubtitle}>{formattedDate}</Text>
           </View>
+
           {entriesForDiscipline.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyTitle}>Aucune performance enregistrée</Text>
-              <Text style={styles.emptySubtitle}>
-                Ajoute une première performance pour afficher la courbe.
-              </Text>
+              <Text style={styles.emptySubtitle}>Ajoute une première performance pour afficher la courbe.</Text>
             </View>
           ) : (
             <LineChart labels={chartLabels} series={[{ color: "#2563EB", data: chartValues }]} />
@@ -709,13 +933,11 @@ function ProgressionScreen({ onBack, performanceEntries, onAddPerformance }) {
         </View>
 
         <View style={styles.sectionBlock}>
-          <Text style={styles.sectionHeader}>Historique des performances</Text>
+          <Text style={styles.sectionHeader}>Historique</Text>
           {performanceEntries.length === 0 ? (
             <View style={styles.emptyStateSoft}>
               <Text style={styles.emptyTitle}>Aucune donnée</Text>
-              <Text style={styles.emptySubtitle}>
-                Tes performances apparaîtront ici après enregistrement.
-              </Text>
+              <Text style={styles.emptySubtitle}>Tes performances apparaîtront ici après enregistrement.</Text>
             </View>
           ) : (
             <View style={styles.performanceList}>
@@ -736,7 +958,7 @@ function ProgressionScreen({ onBack, performanceEntries, onAddPerformance }) {
   );
 }
 
-function SessionDetailScreen({ session, onBack }) {
+function SessionDetailScreen({ session, onBack, userId, onSaved }) {
   const [difficulty, setDifficulty] = useState("ok");
   const [feedback, setFeedback] = useState("");
   const derivedIntervals = useMemo(() => buildIntervals(session), [session]);
@@ -754,32 +976,105 @@ function SessionDetailScreen({ session, onBack }) {
     setSplits(Array.from({ length: derivedIntervals?.reps || 0 }, () => ""));
   }, [derivedIntervals]);
 
-  const handleValidate = () => {
-    Vibration.vibrate(3500);
-    setIsSubmitting(true);
-    setTimeout(() => {
-      setIsSubmitting(false);
-      setShowRecalc(true);
-    }, 900);
-  };
+  const persistFeedback = useCallback(async () => {
+    if (!userId) {
+      Alert.alert("Connexion requise", "Connecte-toi pour enregistrer le feedback.");
+      return false;
+    }
 
-  const handleRecalculate = () => {
+    const payload = {
+      user_id: userId,
+      workout_id: session?.workoutId || session?.workout_id || null,
+      workout_date: session?.dateKey || session?.date || null,
+      title: session?.title || "Séance",
+      difficulty,
+      comment: feedback,
+      splits: showSplits ? splits : [],
+      intervals: derivedIntervals || null,
+      created_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase.from("workouts_feedback").insert([payload]);
+    if (error) {
+      Alert.alert("Erreur", error.message || "Impossible d'enregistrer le feedback.");
+      return false;
+    }
+    return true;
+  }, [difficulty, feedback, derivedIntervals, session, showSplits, splits, userId]);
+
+  const handleValidate = useCallback(async () => {
+    if (isSubmitting) return;
+
+    Vibration.vibrate(3500);
+
+    setIsSubmitting(true);
+    try {
+      const ok = await persistFeedback();
+      if (ok) {
+        setShowRecalc(true);
+        onSaved?.();
+      }
+    } catch (e) {
+      Alert.alert("Erreur", e?.message || "Erreur inconnue.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [isSubmitting, persistFeedback, onSaved]);
+
+  const handleRecalculate = useCallback(async () => {
+    if (!userId) return;
+
     setIsRecalculating(true);
     recalcProgress.setValue(0);
+
     Animated.timing(recalcProgress, {
       toValue: 1,
       duration: 1600,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
-    }).start(() => {
+    }).start();
+
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !sessionData?.session) {
+        Alert.alert("Connexion requise", "Connecte-toi pour ajuster le plan.");
+        return;
+      }
+      const { data, error } = await supabase.functions.invoke("recalculate_plan", {
+        body: {
+          userId,
+          basedOn: {
+            date: session?.dateKey || session?.date || null,
+            difficulty,
+            hasSplits: showSplits,
+          },
+        },
+      });
+      if (error) {
+        Alert.alert(
+          "Erreur",
+          `${error.message}
+status=${error?.context?.status}
+body=${String(error?.context?.body || "")}`
+        );
+        return;
+      }
+      if (data && data.success === false) {
+        Alert.alert("Erreur", data?.error || "Erreur côté serveur.");
+        return;
+      }
+      onSaved?.();
+    } catch (_e) {
+    } finally {
       setTimeout(() => setIsRecalculating(false), 600);
-    });
-  };
+    }
+  }, [difficulty, onSaved, recalcProgress, session, showSplits, userId]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="always">
         <ScreenHeader title="Détail séance" onBack={onBack} />
+
         <View style={styles.sessionHero}>
           <Text style={styles.sessionHeroTitle}>{session.title}</Text>
           <Text style={styles.sessionHeroSubtitle}>
@@ -806,6 +1101,7 @@ function SessionDetailScreen({ session, onBack }) {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Feedback</Text>
           <Text style={styles.cardSubtitle}>Comment tu t'es senti aujourd'hui ?</Text>
+
           <TextInput
             style={styles.feedbackInput}
             value={feedback}
@@ -813,7 +1109,11 @@ function SessionDetailScreen({ session, onBack }) {
             placeholder="Sensations, douleurs, énergie..."
             placeholderTextColor="#64748B"
             multiline
+            autoCorrect={false}
+            autoCapitalize="sentences"
+            blurOnSubmit={false}
           />
+
           <Text style={styles.sectionHeader}>Difficulté</Text>
           <View style={styles.difficultyRow}>
             {[
@@ -826,11 +1126,7 @@ function SessionDetailScreen({ session, onBack }) {
                 style={difficulty === item.key ? styles.difficultyChipActive : styles.difficultyChip}
                 onPress={() => setDifficulty(item.key)}
               >
-                <Text
-                  style={
-                    difficulty === item.key ? styles.difficultyChipTextActive : styles.difficultyChipText
-                  }
-                >
+                <Text style={difficulty === item.key ? styles.difficultyChipTextActive : styles.difficultyChipText}>
                   {item.label}
                 </Text>
               </PressableScale>
@@ -853,6 +1149,10 @@ function SessionDetailScreen({ session, onBack }) {
                       placeholder="12.4"
                       placeholderTextColor="#94A3B8"
                       keyboardType="numeric"
+                      autoCorrect={false}
+                      autoCapitalize="none"
+                      returnKeyType="done"
+                      blurOnSubmit={false}
                     />
                   </View>
                 ))}
@@ -862,12 +1162,15 @@ function SessionDetailScreen({ session, onBack }) {
         </View>
 
         <PressableScale style={styles.primaryButtonBlue} onPress={handleValidate}>
-          <Text style={styles.primaryButtonBlueText}>Valider le feedback</Text>
+          <Text style={styles.primaryButtonBlueText}>
+            {isSubmitting ? "Enregistrement..." : "Valider le feedback"}
+          </Text>
         </PressableScale>
+
         {isSubmitting ? (
           <View style={styles.loadingRow}>
             <ActivityIndicator color="#2563EB" />
-            <Text style={styles.loadingText}>Validation et recalcul en cours...</Text>
+            <Text style={styles.loadingText}>Validation en cours...</Text>
           </View>
         ) : null}
 
@@ -877,31 +1180,33 @@ function SessionDetailScreen({ session, onBack }) {
             <Text style={styles.recalcSubtitle}>
               Le plan peut s'ajuster selon ton ressenti et tes performances.
             </Text>
+
             <PressableScale style={styles.primaryButton} onPress={handleRecalculate}>
               <Text style={styles.primaryButtonText}>
                 {isRecalculating ? "Ajustement..." : "Oui, ajuster le plan"}
               </Text>
             </PressableScale>
+
             {isRecalculating ? (
-              <View style={styles.loadingRow}>
-                <ActivityIndicator color="#0B0D12" />
-                <Text style={styles.loadingText}>Recalcul des prochaines semaines...</Text>
-              </View>
-            ) : null}
-            {isRecalculating ? (
-              <View style={styles.recalcBar}>
-                <Animated.View
-                  style={[
-                    styles.recalcFill,
-                    {
-                      width: recalcProgress.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: ["5%", "100%"],
-                      }),
-                    },
-                  ]}
-                />
-              </View>
+              <>
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator color="#0B0D12" />
+                  <Text style={styles.loadingText}>Recalcul des prochaines semaines...</Text>
+                </View>
+                <View style={styles.recalcBar}>
+                  <Animated.View
+                    style={[
+                      styles.recalcFill,
+                      {
+                        width: recalcProgress.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: ["5%", "100%"],
+                        }),
+                      },
+                    ]}
+                  />
+                </View>
+              </>
             ) : null}
           </View>
         ) : null}
@@ -920,7 +1225,7 @@ function ChatCoachScreen({ coachName, onBack }) {
           <View style={styles.chatEmpty}>
             <Text style={styles.chatEmptyTitle}>Conversation prête</Text>
             <Text style={styles.chatEmptySubtitle}>
-              Le chat sera connecté bientôt. Tu peux déjà préparer tes questions.
+              Le chat peut être branché ensuite. Tu peux déjà préparer tes questions.
             </Text>
           </View>
         </View>
@@ -956,7 +1261,7 @@ function ProgressBlock({ onOpenProgress }) {
     <View style={styles.progressCard}>
       <View>
         <Text style={styles.progressTitle}>Progression</Text>
-        <Text style={styles.progressSubtitle}>Visualise tes performances réelles.</Text>
+        <Text style={styles.progressSubtitle}>Visualise tes performances.</Text>
       </View>
       <PressableScale style={styles.progressButton} onPress={onOpenProgress}>
         <Text style={styles.progressButtonText}>Voir ma progression</Text>
@@ -1101,17 +1406,11 @@ function PressableScale({ onPress, style, children }) {
   const scale = useRef(new Animated.Value(1)).current;
 
   const handlePressIn = () => {
-    Animated.spring(scale, {
-      toValue: 0.97,
-      useNativeDriver: true,
-    }).start();
+    Animated.spring(scale, { toValue: 0.97, useNativeDriver: true }).start();
   };
 
   const handlePressOut = () => {
-    Animated.spring(scale, {
-      toValue: 1,
-      useNativeDriver: true,
-    }).start();
+    Animated.spring(scale, { toValue: 1, useNativeDriver: true }).start();
   };
 
   return (
@@ -1125,6 +1424,69 @@ function statusBadgeStyle(status) {
   if (status === "Repos") return styles.statusBadgeRest;
   if (status === "Séance") return styles.statusBadgeTodo;
   return styles.statusBadgeSkipped;
+}
+
+function mapProfileFromDb(data) {
+  if (!data) return emptyCoachProfile;
+  return {
+    ...emptyCoachProfile,
+    user_id: data.user_id ?? null,
+    coachName: data.coach_name || "",
+    coachCallsYou: data.coach_calls_you || "",
+    appellation: data.appellation || "",
+    level: data.level || "",
+    frequencyPerWeek: data.frequency_per_week || 0,
+    durationPref: data.duration_pref || "",
+    trainingPref: data.training_pref || "",
+    days: data.days || [],
+    equipment: data.equipment || [],
+    healthConstraints: data.health_constraints || "",
+    fatigue: data.fatigue_baseline || "",
+    goal: data.goal || { title: "", dateText: "" },
+    otherPrefs: data.other_prefs || "",
+    disciplines: data.disciplines || [],
+    prs: data.prs || {},
+  };
+}
+
+function mapWorkouts(workouts) {
+  if (!Array.isArray(workouts)) return [];
+  return workouts
+    .map((workout) => {
+      const dateKey =
+        workout.date || workout.scheduled_date || workout.workout_date || workout.session_date;
+      if (!dateKey) return null;
+      return {
+        id: workout.id || dateKey,
+        workoutId: workout.id || null,
+        date: dateKey,
+        dateKey,
+        title: workout.title || workout.name || "Séance",
+        duration:
+          workout.duration ||
+          workout.duration_label ||
+          (workout.duration_minutes ? `${workout.duration_minutes} min` : "Durée à définir"),
+        objectives: workout.objectives || workout.focus || workout.tags || [],
+        description: workout.description || workout.notes || "Séance personnalisée.",
+        intensity: workout.intensity || workout.intensity_label || "À définir",
+        type: workout.type || workout.category || "À définir",
+        intervals: workout.intervals || workout.interval_data || null,
+      };
+    })
+    .filter(Boolean);
+}
+
+function mapFeedbackToPerformanceEntries(entries) {
+  if (!Array.isArray(entries)) return [];
+  return entries.map((entry, index) => {
+    const createdAt = entry.created_at ? new Date(entry.created_at) : null;
+    return {
+      id: entry.id || `feedback-${index}`,
+      discipline: entry.discipline || entry.title || "Feedback séance",
+      value: entry.rating ? `${entry.rating}/10` : entry.difficulty || entry.status || "—",
+      date: createdAt ? formatDate(createdAt) : "Date inconnue",
+    };
+  });
 }
 
 function buildRollingWeek(sessionMap) {
@@ -1175,13 +1537,13 @@ function buildWeeksForMonth(year, monthIndex, sessionMap) {
         dateLabel: formatDate(date),
       };
     });
-    const weekStart = weekDays[0].dateLabel;
-    const weekEnd = weekDays[6].dateLabel;
+
     weeks.push({
       label: `Semaine ${weekIndex + 1}`,
-      range: `${weekStart} → ${weekEnd}`,
+      range: `${weekDays[0].dateLabel} → ${weekDays[6].dateLabel}`,
       sessions: weekDays,
     });
+
     currentStart.setDate(currentStart.getDate() + 7);
     weekIndex += 1;
   }
@@ -1200,6 +1562,7 @@ function buildSessionMap(sessions) {
 function buildSessionForDate(date, sessionMap, useRestLabel = false) {
   const dateKey = formatISODate(date);
   const session = sessionMap[dateKey];
+
   if (!session) {
     return {
       title: useRestLabel ? "Repos" : "Séance à planifier",
@@ -1212,6 +1575,7 @@ function buildSessionForDate(date, sessionMap, useRestLabel = false) {
       hasSession: false,
       isRest: useRestLabel,
       intervals: null,
+      dateKey,
     };
   }
 
@@ -1226,6 +1590,9 @@ function buildSessionForDate(date, sessionMap, useRestLabel = false) {
     hasSession: true,
     isRest: false,
     intervals: session.intervals || null,
+    workoutId: session.workoutId || null,
+    dateKey,
+    date: session.date,
   };
 }
 
@@ -1235,7 +1602,7 @@ function buildIntervals(session) {
     return session.intervals;
   }
   const source = `${session.title || ""} ${session.description || ""}`.toLowerCase();
-  const match = source.match(/(\\d+)\\s*x\\s*(\\d+)\\s*(m|km)?/i);
+  const match = source.match(/(\d+)\s*x\s*(\d+)\s*(m|km)?/i);
   if (!match) return null;
   const reps = Number(match[1]);
   const distance = match[2];
@@ -1264,7 +1631,7 @@ function formatPerformanceValue(value, unit) {
   const trimmed = value.trim();
   if (!trimmed) return "";
   if (unit === "min:s") {
-    return trimmed.includes(":") ? `${trimmed} min:s` : `${trimmed} min:s`;
+    return trimmed.includes(":") ? trimmed : trimmed;
   }
   return trimmed.includes(unit) ? trimmed : `${trimmed} ${unit}`;
 }
@@ -1287,16 +1654,14 @@ function getDayKey(date) {
 }
 
 function formatDate(date) {
-  return `${String(date.getDate()).padStart(2, "0")}/${String(date.getMonth() + 1).padStart(
-    2,
-    "0"
-  )}`;
+  return `${String(date.getDate()).padStart(2, "0")}/${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function formatISODate(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-    date.getDate()
-  ).padStart(2, "0")}`;
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(
+    2,
+    "0"
+  )}`;
 }
 
 function startOfWeek(date) {
@@ -1308,23 +1673,11 @@ function startOfWeek(date) {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: "#F4F5F7",
-  },
-  container: {
-    backgroundColor: "#F4F5F7",
-    flex: 1,
-  },
-  content: {
-    padding: 20,
-    paddingTop: 32,
-    paddingBottom: 48,
-  },
-  screenWrapper: {
-    flex: 1,
-    backgroundColor: "#F4F5F7",
-  },
+  safeArea: { flex: 1, backgroundColor: "#F4F5F7" },
+  container: { backgroundColor: "#F4F5F7", flex: 1 },
+  content: { padding: 20, paddingTop: 32, paddingBottom: 48 },
+  screenWrapper: { flex: 1, backgroundColor: "#F4F5F7" },
+
   header: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -1332,46 +1685,24 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     marginTop: 6,
   },
-  headerTextBlock: {
-    flex: 1,
-    paddingRight: 12,
-  },
-  headerTitle: {
-    fontSize: 32,
-    fontWeight: "700",
-    color: "#0B0D12",
-    marginBottom: 6,
-  },
-  headerSubtitle: {
-    fontSize: 15,
-    color: "#52607A",
-  },
-  headerState: {
-    fontSize: 12,
-    color: "#94A3B8",
-    marginTop: 6,
-  },
-  screenHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 20,
-  },
-  backButton: {
-    backgroundColor: "#0B0D12",
+  headerTextBlock: { flex: 1, paddingRight: 12 },
+  logoutButton: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 12,
     paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 14,
+    borderRadius: 12,
+    backgroundColor: "rgba(15,17,26,0.08)",
   },
-  backButtonText: {
-    color: "#FFFFFF",
-    fontWeight: "700",
-  },
-  screenTitle: {
-    fontSize: 22,
-    fontWeight: "700",
-    color: "#0B0D12",
-  },
+  logoutText: { color: "#0F1117", fontWeight: "600", fontSize: 12 },
+  headerTitle: { fontSize: 32, fontWeight: "700", color: "#0B0D12", marginBottom: 6 },
+  headerSubtitle: { fontSize: 15, color: "#52607A" },
+  headerState: { fontSize: 12, color: "#94A3B8", marginTop: 6 },
+
+  screenHeader: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 20 },
+  backButton: { backgroundColor: "#0B0D12", paddingVertical: 8, paddingHorizontal: 14, borderRadius: 14 },
+  backButtonText: { color: "#FFFFFF", fontWeight: "700" },
+  screenTitle: { fontSize: 22, fontWeight: "700", color: "#0B0D12" },
+
   card: {
     backgroundColor: "#FFFFFF",
     borderRadius: 24,
@@ -1385,62 +1716,19 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 2,
   },
-  cardHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 12,
-  },
-  cardTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#0B0D12",
-  },
-  cardSubtitle: {
-    fontSize: 14,
-    color: "#52607A",
-  },
-  accentBadge: {
-    backgroundColor: "rgba(37, 99, 235, 0.12)",
-    borderRadius: 14,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-  },
-  accentBadgeText: {
-    color: "#2563EB",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  accentPillLight: {
-    backgroundColor: "rgba(37, 99, 235, 0.12)",
-    borderRadius: 14,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-  },
-  accentPillLightText: {
-    color: "#2563EB",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  profileTopRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-    marginBottom: 12,
-  },
-  profileIdentity: {
-    flex: 1,
-  },
-  profileName: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#0B0D12",
-  },
-  profileSubtitle: {
-    fontSize: 14,
-    color: "#52607A",
-    marginTop: 4,
-  },
+  cardHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },
+  cardTitle: { fontSize: 18, fontWeight: "700", color: "#0B0D12" },
+  cardSubtitle: { fontSize: 14, color: "#52607A" },
+
+  accentBadge: { backgroundColor: "rgba(37, 99, 235, 0.12)", borderRadius: 14, paddingVertical: 6, paddingHorizontal: 10 },
+  accentBadgeText: { color: "#2563EB", fontSize: 12, fontWeight: "600" },
+  accentPillLight: { backgroundColor: "rgba(37, 99, 235, 0.12)", borderRadius: 14, paddingVertical: 6, paddingHorizontal: 12 },
+  accentPillLightText: { color: "#2563EB", fontSize: 12, fontWeight: "600" },
+
+  profileTopRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, marginBottom: 12 },
+  profileIdentity: { flex: 1 },
+  profileName: { fontSize: 20, fontWeight: "700", color: "#0B0D12" },
+  profileSubtitle: { fontSize: 14, color: "#52607A", marginTop: 4 },
   profileMetaCardLight: {
     backgroundColor: "#F4F5F7",
     borderRadius: 16,
@@ -1450,24 +1738,11 @@ const styles = StyleSheet.create({
     borderColor: "rgba(15, 23, 42, 0.06)",
     maxWidth: "48%",
   },
-  profileMetaLabel: {
-    fontSize: 11,
-    textTransform: "uppercase",
-    color: "#2563EB",
-    letterSpacing: 0.4,
-    marginBottom: 4,
-  },
-  profileMetaValue: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#0B0D12",
-  },
-  profileQuickInfoRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    marginBottom: 8,
-  },
+  profileMetaLabel: { fontSize: 11, textTransform: "uppercase", color: "#2563EB", letterSpacing: 0.4, marginBottom: 4 },
+  profileMetaValue: { fontSize: 13, fontWeight: "600", color: "#0B0D12" },
+
+  profileQuickInfoRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 8 },
+
   infoPill: {
     backgroundColor: "#F4F5F7",
     borderRadius: 16,
@@ -1476,416 +1751,94 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(15, 23, 42, 0.05)",
   },
-  infoPillLabel: {
-    fontSize: 11,
-    color: "#64748B",
-  },
-  infoPillValue: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#0B0D12",
-  },
-  row: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
-    marginBottom: 10,
-  },
-  infoLine: {
-    flex: 1,
-    minWidth: "45%",
-    marginBottom: 8,
-  },
-  infoLabel: {
-    fontSize: 12,
-    color: "#64748B",
-    marginBottom: 4,
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-  },
-  infoValue: {
-    fontSize: 14,
-    color: "#0B0D12",
-    fontWeight: "600",
-  },
-  expandedBlock: {
-    marginTop: 10,
-  },
-  sectionDivider: {
-    height: 1,
-    backgroundColor: "rgba(15, 23, 42, 0.08)",
-    marginVertical: 12,
-  },
-  sectionHeader: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0B0D12",
-    marginBottom: 10,
-  },
-  sectionBlock: {
-    marginBottom: 18,
-  },
-  chipRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    marginBottom: 14,
-  },
-  chipSoft: {
-    backgroundColor: "rgba(37, 99, 235, 0.08)",
-    borderRadius: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  chipSoftText: {
-    color: "#2563EB",
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  chipDark: {
-    backgroundColor: "#0B0D12",
-    borderRadius: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  chipDarkText: {
-    color: "#FFFFFF",
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  primaryButton: {
-    backgroundColor: "#0B0D12",
-    paddingVertical: 12,
-    borderRadius: 16,
-    alignItems: "center",
-    marginTop: 10,
-  },
-  primaryButtonText: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    fontWeight: "700",
-  },
-  primaryButtonBlue: {
-    backgroundColor: "#2563EB",
-    paddingVertical: 12,
-    borderRadius: 16,
-    alignItems: "center",
-    marginTop: 12,
-  },
-  primaryButtonBlueText: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    fontWeight: "700",
-  },
-  primaryButtonLarge: {
-    backgroundColor: "#0B0D12",
-    paddingVertical: 16,
-    borderRadius: 20,
-    alignItems: "center",
-    marginTop: 10,
-  },
-  primaryButtonLargeText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "700",
-  },
-  weekRow: {
-    flexDirection: "column",
-    gap: 12,
-    paddingVertical: 12,
-  },
-  weekCard: {
-    width: "100%",
-    backgroundColor: "rgba(37, 99, 235, 0.08)",
-    borderRadius: 20,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "rgba(37, 99, 235, 0.12)",
-  },
-  restCard: {
-    width: "100%",
-    backgroundColor: "rgba(34, 197, 94, 0.08)",
-    borderRadius: 20,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "rgba(34, 197, 94, 0.18)",
-  },
-  weekDay: {
-    fontSize: 12,
-    color: "#52607A",
-    fontWeight: "600",
-  },
-  weekDate: {
-    fontSize: 12,
-    color: "#94A3B8",
-  },
-  weekTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#0B0D12",
-    marginBottom: 6,
-    marginTop: 8,
-  },
-  weekMeta: {
-    fontSize: 13,
-    color: "#52607A",
-    marginBottom: 6,
-  },
-  weekCardHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 10,
-  },
-  todayBadge: {
-    backgroundColor: "#0B0D12",
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 999,
-  },
-  todayBadgeText: {
-    color: "#FFFFFF",
-    fontSize: 10,
-    fontWeight: "700",
-  },
-  tagRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  tagPill: {
-    backgroundColor: "rgba(255,255,255,0.8)",
-    borderRadius: 12,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-  },
-  tagPillText: {
-    color: "#0B0D12",
-    fontSize: 11,
-    fontWeight: "600",
-  },
-  tagPillMuted: {
-    backgroundColor: "#F4F5F7",
-    borderRadius: 12,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-  },
-  tagPillMutedText: {
-    color: "#475569",
-    fontSize: 11,
-    fontWeight: "600",
-  },
-  tagPillDark: {
-    backgroundColor: "rgba(255,255,255,0.15)",
-    borderRadius: 12,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-  },
-  tagPillDarkText: {
-    color: "#FFFFFF",
-    fontSize: 11,
-    fontWeight: "600",
-  },
-  statusBadgeTodo: {
-    backgroundColor: "#0B0D12",
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-  },
-  statusBadgeSkipped: {
-    backgroundColor: "rgba(148, 163, 184, 0.2)",
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-  },
-  statusBadgeRest: {
-    backgroundColor: "rgba(34, 197, 94, 0.12)",
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-  },
-  statusText: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#0B0D12",
-  },
-  segmentedControl: {
-    flexDirection: "row",
-    gap: 10,
-    flexWrap: "wrap",
-    marginBottom: 12,
-  },
-  segmentedActive: {
-    backgroundColor: "#0B0D12",
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 16,
-  },
-  segmentedActiveText: {
-    color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  segmentedInactive: {
-    backgroundColor: "rgba(255,255,255,0.8)",
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 16,
-  },
-  segmentedInactiveText: {
-    color: "#0B0D12",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  weekList: {
-    gap: 12,
-    marginBottom: 16,
-  },
-  weekCardLarge: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 20,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "rgba(37, 99, 235, 0.1)",
-  },
-  weekCardActive: {
-    backgroundColor: "#0B0D12",
-    borderRadius: 20,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.4)",
-  },
-  weekCardTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0B0D12",
-  },
-  weekCardTitleActive: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
-  weekCardSubtitle: {
-    fontSize: 13,
-    color: "#52607A",
-    marginTop: 4,
-  },
-  weekCardSubtitleActive: {
-    fontSize: 13,
-    color: "#E2E8F0",
-    marginTop: 4,
-  },
-  sessionGrid: {
-    flexDirection: "column",
-    gap: 12,
-  },
-  sessionCard: {
-    width: "100%",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 20,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-  },
-  sessionCardRest: {
-    width: "100%",
-    backgroundColor: "rgba(34, 197, 94, 0.08)",
-    borderRadius: 20,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: "rgba(34, 197, 94, 0.16)",
-  },
-  sessionCardHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 8,
-  },
-  sessionCardDay: {
-    fontSize: 12,
-    color: "#52607A",
-    fontWeight: "600",
-  },
-  sessionCardDate: {
-    fontSize: 11,
-    color: "#94A3B8",
-  },
-  sessionCardTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#0B0D12",
-    marginBottom: 6,
-  },
-  sessionCardMeta: {
-    fontSize: 12,
-    color: "#52607A",
-    marginBottom: 6,
-  },
-  badgeActive: {
-    backgroundColor: "rgba(37, 99, 235, 0.16)",
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 999,
-  },
-  badgePositive: {
-    backgroundColor: "rgba(34, 197, 94, 0.2)",
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 999,
-  },
-  badgeText: {
-    fontSize: 11,
-    color: "#0B0D12",
-    fontWeight: "600",
-  },
-  monthRow: {
-    flexDirection: "row",
-    gap: 10,
-    marginBottom: 12,
-  },
-  monthChip: {
-    backgroundColor: "rgba(255,255,255,0.9)",
-    borderRadius: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-  },
-  monthChipActive: {
-    backgroundColor: "#0B0D12",
-    borderRadius: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  monthChipText: {
-    color: "#0B0D12",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  monthChipTextActive: {
-    color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  progressCard: {
-    backgroundColor: "#0B0D12",
-    borderRadius: 26,
-    padding: 20,
-    marginBottom: 16,
-  },
-  progressTitle: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#FFFFFF",
-    marginBottom: 4,
-  },
-  progressSubtitle: {
-    fontSize: 14,
-    color: "#E5E7EB",
-    marginBottom: 12,
-  },
+  infoPillLabel: { fontSize: 11, color: "#64748B" },
+  infoPillValue: { fontSize: 13, fontWeight: "600", color: "#0B0D12" },
+
+  row: { flexDirection: "row", flexWrap: "wrap", gap: 12, marginBottom: 10 },
+  infoLine: { flex: 1, minWidth: "45%", marginBottom: 8 },
+  infoLabel: { fontSize: 12, color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.4 },
+  infoValue: { fontSize: 14, color: "#0B0D12", fontWeight: "600" },
+
+  expandedBlock: { marginTop: 10 },
+  sectionDivider: { height: 1, backgroundColor: "rgba(15, 23, 42, 0.08)", marginVertical: 12 },
+  sectionHeader: { fontSize: 16, fontWeight: "700", color: "#0B0D12", marginBottom: 10 },
+  sectionBlock: { marginBottom: 18 },
+
+  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 14 },
+  chipSoft: { backgroundColor: "rgba(37, 99, 235, 0.08)", borderRadius: 16, paddingVertical: 8, paddingHorizontal: 12 },
+  chipSoftText: { color: "#2563EB", fontSize: 13, fontWeight: "600" },
+  chipDark: { backgroundColor: "#0B0D12", borderRadius: 16, paddingVertical: 8, paddingHorizontal: 12 },
+  chipDarkText: { color: "#FFFFFF", fontSize: 13, fontWeight: "600" },
+
+  primaryButton: { backgroundColor: "#0B0D12", paddingVertical: 12, borderRadius: 16, alignItems: "center", marginTop: 10 },
+  primaryButtonText: { color: "#FFFFFF", fontSize: 15, fontWeight: "700" },
+  primaryButtonBlue: { backgroundColor: "#2563EB", paddingVertical: 12, borderRadius: 16, alignItems: "center", marginTop: 12 },
+  primaryButtonBlueText: { color: "#FFFFFF", fontSize: 15, fontWeight: "700" },
+  primaryButtonLarge: { backgroundColor: "#0B0D12", paddingVertical: 16, borderRadius: 20, alignItems: "center", marginTop: 10 },
+  primaryButtonLargeText: { color: "#FFFFFF", fontSize: 16, fontWeight: "700" },
+
+  weekRow: { flexDirection: "column", gap: 12, paddingVertical: 12 },
+  weekCard: { width: "100%", backgroundColor: "rgba(37, 99, 235, 0.08)", borderRadius: 20, padding: 16, borderWidth: 1, borderColor: "rgba(37, 99, 235, 0.12)" },
+  restCard: { width: "100%", backgroundColor: "rgba(34, 197, 94, 0.08)", borderRadius: 20, padding: 16, borderWidth: 1, borderColor: "rgba(34, 197, 94, 0.18)" },
+
+  weekCardHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  weekDay: { fontSize: 12, color: "#52607A", fontWeight: "600" },
+  weekDate: { fontSize: 12, color: "#94A3B8" },
+  weekTitle: { fontSize: 15, fontWeight: "700", color: "#0B0D12", marginBottom: 6, marginTop: 8 },
+  weekMeta: { fontSize: 13, color: "#52607A", marginBottom: 6 },
+
+  todayBadge: { backgroundColor: "#0B0D12", paddingVertical: 4, paddingHorizontal: 8, borderRadius: 999 },
+  todayBadgeText: { color: "#FFFFFF", fontSize: 10, fontWeight: "700" },
+
+  tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  tagPill: { backgroundColor: "rgba(255,255,255,0.8)", borderRadius: 12, paddingVertical: 4, paddingHorizontal: 8 },
+  tagPillText: { color: "#0B0D12", fontSize: 11, fontWeight: "600" },
+  tagPillMuted: { backgroundColor: "#F4F5F7", borderRadius: 12, paddingVertical: 4, paddingHorizontal: 8 },
+  tagPillMutedText: { color: "#475569", fontSize: 11, fontWeight: "600" },
+  tagPillDark: { backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 12, paddingVertical: 6, paddingHorizontal: 10 },
+  tagPillDarkText: { color: "#FFFFFF", fontSize: 11, fontWeight: "600" },
+
+  statusBadgeTodo: { backgroundColor: "#0B0D12", paddingVertical: 6, paddingHorizontal: 10, borderRadius: 12 },
+  statusBadgeSkipped: { backgroundColor: "rgba(148, 163, 184, 0.2)", paddingVertical: 6, paddingHorizontal: 10, borderRadius: 12 },
+  statusBadgeRest: { backgroundColor: "rgba(34, 197, 94, 0.12)", paddingVertical: 6, paddingHorizontal: 10, borderRadius: 12 },
+  statusText: { fontSize: 12, fontWeight: "600", color: "#0B0D12" },
+
+  segmentedControl: { flexDirection: "row", gap: 10, flexWrap: "wrap", marginBottom: 12 },
+  segmentedActive: { backgroundColor: "#0B0D12", paddingVertical: 8, paddingHorizontal: 14, borderRadius: 16 },
+  segmentedActiveText: { color: "#FFFFFF", fontSize: 12, fontWeight: "600" },
+  segmentedInactive: { backgroundColor: "rgba(255,255,255,0.8)", borderWidth: 1, borderColor: "rgba(15, 23, 42, 0.08)", paddingVertical: 8, paddingHorizontal: 14, borderRadius: 16 },
+  segmentedInactiveText: { color: "#0B0D12", fontSize: 12, fontWeight: "600" },
+
+  weekList: { gap: 12, marginBottom: 16 },
+  weekCardLarge: { backgroundColor: "#FFFFFF", borderRadius: 20, padding: 16, borderWidth: 1, borderColor: "rgba(37, 99, 235, 0.1)" },
+  weekCardActive: { backgroundColor: "#0B0D12", borderRadius: 20, padding: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.4)" },
+  weekCardTitle: { fontSize: 16, fontWeight: "700", color: "#0B0D12" },
+  weekCardTitleActive: { fontSize: 16, fontWeight: "700", color: "#FFFFFF" },
+  weekCardSubtitle: { fontSize: 13, color: "#52607A", marginTop: 4 },
+  weekCardSubtitleActive: { fontSize: 13, color: "#E2E8F0", marginTop: 4 },
+
+  sessionGrid: { flexDirection: "column", gap: 12 },
+  sessionCard: { width: "100%", backgroundColor: "#FFFFFF", borderRadius: 20, padding: 14, borderWidth: 1, borderColor: "rgba(15, 23, 42, 0.08)" },
+  sessionCardRest: { width: "100%", backgroundColor: "rgba(34, 197, 94, 0.08)", borderRadius: 20, padding: 14, borderWidth: 1, borderColor: "rgba(34, 197, 94, 0.16)" },
+  sessionCardHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  sessionCardDay: { fontSize: 12, color: "#52607A", fontWeight: "600" },
+  sessionCardDate: { fontSize: 11, color: "#94A3B8" },
+  sessionCardTitle: { fontSize: 14, fontWeight: "700", color: "#0B0D12", marginBottom: 6 },
+  sessionCardMeta: { fontSize: 12, color: "#52607A", marginBottom: 6 },
+
+  badgeActive: { backgroundColor: "rgba(37, 99, 235, 0.16)", paddingVertical: 4, paddingHorizontal: 8, borderRadius: 999 },
+  badgePositive: { backgroundColor: "rgba(34, 197, 94, 0.2)", paddingVertical: 4, paddingHorizontal: 8, borderRadius: 999 },
+  badgeText: { fontSize: 11, color: "#0B0D12", fontWeight: "600" },
+
+  monthRow: { flexDirection: "row", gap: 10, marginBottom: 12 },
+  monthChip: { backgroundColor: "rgba(255,255,255,0.9)", borderRadius: 16, paddingVertical: 8, paddingHorizontal: 12, borderWidth: 1, borderColor: "rgba(15, 23, 42, 0.08)" },
+  monthChipActive: { backgroundColor: "#0B0D12", borderRadius: 16, paddingVertical: 8, paddingHorizontal: 12 },
+  monthChipText: { color: "#0B0D12", fontSize: 12, fontWeight: "600" },
+  monthChipTextActive: { color: "#FFFFFF", fontSize: 12, fontWeight: "600" },
+
+  progressCard: { backgroundColor: "#0B0D12", borderRadius: 26, padding: 20, marginBottom: 16 },
+  progressTitle: { fontSize: 20, fontWeight: "700", color: "#FFFFFF", marginBottom: 4 },
+  progressSubtitle: { fontSize: 14, color: "#E5E7EB", marginBottom: 12 },
   progressButton: {
     backgroundColor: "#FFFFFF",
     borderRadius: 20,
@@ -1900,336 +1853,74 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 2,
   },
-  progressButtonText: {
-    color: "#0B0D12",
-    fontSize: 15,
-    fontWeight: "700",
-  },
-  datePickerGroup: {
-    gap: 8,
-    marginBottom: 10,
-  },
-  datePickerField: {
-    marginBottom: 8,
-  },
-  dateSelector: {
-    backgroundColor: "#F4F5F7",
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-  },
-  dateSelectorLabel: {
-    fontSize: 11,
-    color: "#64748B",
-    marginBottom: 4,
-  },
-  dateSelectorValue: {
-    fontSize: 14,
-    color: "#0B0D12",
-    fontWeight: "600",
-  },
-  datePickerRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    marginTop: 8,
-  },
-  dateChip: {
-    backgroundColor: "rgba(255,255,255,0.9)",
-    borderRadius: 16,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-  },
-  dateChipActive: {
-    backgroundColor: "#0B0D12",
-    borderRadius: 16,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-  },
-  dateChipText: {
-    color: "#0B0D12",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  dateChipTextActive: {
-    color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  inputRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  input: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-    color: "#0B0D12",
-    marginBottom: 12,
-  },
-  unitBadge: {
-    backgroundColor: "#0B0D12",
-    borderRadius: 14,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    marginBottom: 12,
-  },
-  unitBadgeText: {
-    color: "#FFFFFF",
-    fontWeight: "700",
-  },
-  performanceList: {
-    gap: 12,
-    marginTop: 8,
-  },
-  performanceItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(15, 23, 42, 0.08)",
-  },
-  performanceTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#0B0D12",
-  },
-  performanceMeta: {
-    fontSize: 12,
-    color: "#52607A",
-    marginTop: 4,
-  },
-  performanceValue: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#2563EB",
-  },
-  emptyState: {
-    backgroundColor: "#F4F5F7",
-    borderRadius: 18,
-    padding: 16,
-  },
-  emptyStateSoft: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.06)",
-  },
-  emptyTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#0B0D12",
-    marginBottom: 6,
-  },
-  emptySubtitle: {
-    fontSize: 13,
-    color: "#52607A",
-  },
-  chatEmpty: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 20,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-  },
-  chatEmptyTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0B0D12",
-    marginBottom: 6,
-  },
-  chatEmptySubtitle: {
-    fontSize: 13,
-    color: "#52607A",
-  },
-  chatInputBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    padding: 16,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(15, 23, 42, 0.08)",
-    backgroundColor: "#F4F5F7",
-  },
-  chatInput: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-    color: "#0B0D12",
-  },
-  chatSendButtonDisabled: {
-    backgroundColor: "rgba(15, 23, 42, 0.2)",
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 16,
-  },
-  chatSendTextDisabled: {
-    color: "#94A3B8",
-    fontWeight: "700",
-  },
-  sessionHero: {
-    backgroundColor: "#0B0D12",
-    borderRadius: 24,
-    padding: 18,
-    marginBottom: 16,
-  },
-  sessionHeroTitle: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#FFFFFF",
-    marginBottom: 6,
-  },
-  sessionHeroSubtitle: {
-    fontSize: 13,
-    color: "#E2E8F0",
-    marginBottom: 12,
-  },
-  sessionInfoRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    marginTop: 12,
-  },
-  feedbackInput: {
-    backgroundColor: "#F4F5F7",
-    borderRadius: 16,
-    padding: 12,
-    minHeight: 110,
-    textAlignVertical: "top",
-    marginTop: 12,
-    marginBottom: 16,
-    color: "#0B0D12",
-  },
-  difficultyRow: {
-    flexDirection: "row",
-    gap: 10,
-    flexWrap: "wrap",
-  },
-  difficultyChip: {
-    backgroundColor: "rgba(37, 99, 235, 0.08)",
-    borderRadius: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  difficultyChipActive: {
-    backgroundColor: "#0B0D12",
-    borderRadius: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  difficultyChipText: {
-    color: "#2563EB",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  difficultyChipTextActive: {
-    color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  splitBlock: {
-    marginTop: 16,
-  },
-  splitGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-  },
-  splitInputWrapper: {
-    width: "30%",
-  },
-  splitLabel: {
-    fontSize: 11,
-    color: "#94A3B8",
-    marginBottom: 6,
-  },
-  splitInput: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-    color: "#0B0D12",
-  },
-  loadingRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginTop: 12,
-  },
-  loadingText: {
-    color: "#52607A",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  recalcCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 22,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-    marginTop: 20,
-  },
-  recalcTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0B0D12",
-    marginBottom: 6,
-  },
-  recalcSubtitle: {
-    fontSize: 13,
-    color: "#52607A",
-    marginBottom: 12,
-  },
-  recalcBar: {
-    height: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(37, 99, 235, 0.15)",
-    overflow: "hidden",
-  },
-  recalcFill: {
-    height: "100%",
-    borderRadius: 999,
-    backgroundColor: "#2563EB",
-  },
-  lineChart: {
-    height: 150,
-    borderRadius: 16,
-    backgroundColor: "#F4F5F7",
-    overflow: "hidden",
-  },
-  lineChartGrid: {
-    ...StyleSheet.absoluteFillObject,
-    borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.06)",
-    borderRadius: 16,
-  },
-  lineChartLabels: {
-    position: "absolute",
-    bottom: 6,
-    left: 12,
-    right: 12,
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  lineChartLabelText: {
-    fontSize: 10,
-    color: "#64748B",
-  },
+  progressButtonText: { color: "#0B0D12", fontSize: 15, fontWeight: "700" },
+
+  datePickerGroup: { gap: 8, marginBottom: 10 },
+  datePickerField: { marginBottom: 8 },
+  dateSelector: { backgroundColor: "#F4F5F7", borderRadius: 16, paddingVertical: 12, paddingHorizontal: 14, borderWidth: 1, borderColor: "rgba(15, 23, 42, 0.08)" },
+  dateSelectorLabel: { fontSize: 11, color: "#64748B", marginBottom: 4 },
+  dateSelectorValue: { fontSize: 14, color: "#0B0D12", fontWeight: "600" },
+  datePickerRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 8 },
+  dateChip: { backgroundColor: "rgba(255,255,255,0.9)", borderRadius: 16, paddingVertical: 6, paddingHorizontal: 10, borderWidth: 1, borderColor: "rgba(15, 23, 42, 0.08)" },
+  dateChipActive: { backgroundColor: "#0B0D12", borderRadius: 16, paddingVertical: 6, paddingHorizontal: 10 },
+  dateChipText: { color: "#0B0D12", fontSize: 12, fontWeight: "600" },
+  dateChipTextActive: { color: "#FFFFFF", fontSize: 12, fontWeight: "600" },
+
+  inputRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  input: { flex: 1, backgroundColor: "#FFFFFF", borderRadius: 16, paddingVertical: 12, paddingHorizontal: 14, borderWidth: 1, borderColor: "rgba(15, 23, 42, 0.08)", color: "#0B0D12", marginBottom: 12 },
+  unitBadge: { backgroundColor: "#0B0D12", borderRadius: 14, paddingVertical: 8, paddingHorizontal: 12, marginBottom: 12 },
+  unitBadgeText: { color: "#FFFFFF", fontWeight: "700" },
+
+  performanceList: { gap: 12, marginTop: 8 },
+  performanceItem: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "rgba(15, 23, 42, 0.08)" },
+  performanceTitle: { fontSize: 14, fontWeight: "700", color: "#0B0D12" },
+  performanceMeta: { fontSize: 12, color: "#52607A", marginTop: 4 },
+  performanceValue: { fontSize: 14, fontWeight: "700", color: "#2563EB" },
+
+  emptyState: { backgroundColor: "#F4F5F7", borderRadius: 18, padding: 16 },
+  emptyStateSoft: { backgroundColor: "#FFFFFF", borderRadius: 18, padding: 16, borderWidth: 1, borderColor: "rgba(15, 23, 42, 0.06)" },
+  emptyTitle: { fontSize: 14, fontWeight: "700", color: "#0B0D12", marginBottom: 6 },
+  emptySubtitle: { fontSize: 13, color: "#52607A" },
+
+  chatEmpty: { backgroundColor: "#FFFFFF", borderRadius: 20, padding: 18, borderWidth: 1, borderColor: "rgba(15, 23, 42, 0.08)" },
+  chatEmptyTitle: { fontSize: 16, fontWeight: "700", color: "#0B0D12", marginBottom: 6 },
+  chatEmptySubtitle: { fontSize: 13, color: "#52607A" },
+
+  chatInputBar: { flexDirection: "row", alignItems: "center", gap: 10, padding: 16, borderTopWidth: 1, borderTopColor: "rgba(15, 23, 42, 0.08)", backgroundColor: "#F4F5F7" },
+  chatInput: { flex: 1, backgroundColor: "#FFFFFF", borderRadius: 16, paddingVertical: 12, paddingHorizontal: 14, borderWidth: 1, borderColor: "rgba(15, 23, 42, 0.08)", color: "#0B0D12" },
+  chatSendButtonDisabled: { backgroundColor: "rgba(15, 23, 42, 0.2)", paddingVertical: 12, paddingHorizontal: 16, borderRadius: 16 },
+  chatSendTextDisabled: { color: "#94A3B8", fontWeight: "700" },
+
+  sessionHero: { backgroundColor: "#0B0D12", borderRadius: 24, padding: 18, marginBottom: 16 },
+  sessionHeroTitle: { fontSize: 20, fontWeight: "700", color: "#FFFFFF", marginBottom: 6 },
+  sessionHeroSubtitle: { fontSize: 13, color: "#E2E8F0", marginBottom: 12 },
+  sessionInfoRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 12 },
+
+  feedbackInput: { backgroundColor: "#F4F5F7", borderRadius: 16, padding: 12, minHeight: 110, textAlignVertical: "top", marginTop: 12, marginBottom: 16, color: "#0B0D12" },
+
+  difficultyRow: { flexDirection: "row", gap: 10, flexWrap: "wrap" },
+  difficultyChip: { backgroundColor: "rgba(37, 99, 235, 0.08)", borderRadius: 16, paddingVertical: 8, paddingHorizontal: 12 },
+  difficultyChipActive: { backgroundColor: "#0B0D12", borderRadius: 16, paddingVertical: 8, paddingHorizontal: 12 },
+  difficultyChipText: { color: "#2563EB", fontSize: 12, fontWeight: "600" },
+  difficultyChipTextActive: { color: "#FFFFFF", fontSize: 12, fontWeight: "600" },
+
+  splitBlock: { marginTop: 16 },
+  splitGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  splitInputWrapper: { width: "30%" },
+  splitLabel: { fontSize: 11, color: "#94A3B8", marginBottom: 6 },
+  splitInput: { backgroundColor: "#FFFFFF", borderRadius: 12, paddingVertical: 8, paddingHorizontal: 10, borderWidth: 1, borderColor: "rgba(15, 23, 42, 0.08)", color: "#0B0D12" },
+
+  loadingRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12 },
+  loadingText: { color: "#52607A", fontSize: 12, fontWeight: "600" },
+
+  recalcCard: { backgroundColor: "#FFFFFF", borderRadius: 22, padding: 16, borderWidth: 1, borderColor: "rgba(15, 23, 42, 0.08)", marginTop: 20 },
+  recalcTitle: { fontSize: 16, fontWeight: "700", color: "#0B0D12", marginBottom: 6 },
+  recalcSubtitle: { fontSize: 13, color: "#52607A", marginBottom: 12 },
+  recalcBar: { height: 8, borderRadius: 999, backgroundColor: "rgba(37, 99, 235, 0.15)", overflow: "hidden" },
+  recalcFill: { height: "100%", borderRadius: 999, backgroundColor: "#2563EB" },
+
+  lineChart: { height: 150, borderRadius: 16, backgroundColor: "#F4F5F7", overflow: "hidden" },
+  lineChartGrid: { ...StyleSheet.absoluteFillObject, borderWidth: 1, borderColor: "rgba(15, 23, 42, 0.06)", borderRadius: 16 },
+  lineChartLabels: { position: "absolute", bottom: 6, left: 12, right: 12, flexDirection: "row", justifyContent: "space-between" },
+  lineChartLabelText: { fontSize: 10, color: "#64748B" },
 });
