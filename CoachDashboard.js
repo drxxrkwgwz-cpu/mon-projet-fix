@@ -168,7 +168,7 @@ export default function CoachDashboard({ route }) {
     const levelLabel = LEVEL_LABELS[coachProfile.level] || "À définir";
     const fatigueLabel = FATIGUE_LABELS[coachProfile.fatigue] || "À définir";
     const frequencyLabel = coachProfile.frequencyPerWeek
-      ? `${coachProfile.frequencyPerWeek} séances / semaine`
+      ? String(coachProfile.frequencyPerWeek) + " séances / semaine"
       : "À définir";
     const durationLabel = DURATION_LABELS[coachProfile.durationPref] || "À définir";
     const trainingLabel = TRAINING_LABELS[coachProfile.trainingPref] || "À définir";
@@ -196,7 +196,7 @@ export default function CoachDashboard({ route }) {
   const goalTitle = coachProfile.goal?.title || "Objectif à définir";
   const goalDate = coachProfile.goal?.dateText || "Date à définir";
   const coachName = coachProfile.coachName || "";
-  const chatLabel = coachName ? `Parler à ${coachName}` : "Parler au coach";
+  const chatLabel = coachName ? "Parler à " + coachName : "Parler au coach";
 
   const rollingWeek = useMemo(() => buildRollingWeek(sessionMap), [sessionMap]);
 
