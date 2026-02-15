@@ -94,6 +94,21 @@ const monthLabels = [
   "Décembre",
 ];
 
+const monthShortLabels = [
+  "janv.",
+  "févr.",
+  "mars",
+  "avr.",
+  "mai",
+  "juin",
+  "juil.",
+  "août",
+  "sept.",
+  "oct.",
+  "nov.",
+  "déc.",
+];
+
 const planningTabs = ["Semaine", "Mois"];
 
 const performanceDisciplines = [
@@ -394,49 +409,107 @@ function ProfileCard({ coachProfile, profileSummary, expanded, onToggle }) {
   );
 }
 
-function WeekOverview({ sessions, onOpenPlanning, onOpenSession }) {
+function WeekOverview({
+  sessions,
+  onOpenPlanning,
+  onOpenSession,
+  onGenerateWeek,
+  isGeneratingWeek,
+  isLoggedIn,
+}) {
+  const sessionItems = useMemo(
+    () => sessions.filter((session) => session.hasSession && !session.isRest),
+    [sessions]
+  );
+  const totalSessions = sessionItems.length;
+  const totalMinutes = sessionItems.reduce(
+    (sum, session) => sum + parseMinutesFromDuration(session.duration),
+    0
+  );
+  const plannedSessions = sessionItems.filter((session) => session.status !== "Terminée").length;
+  const upcomingSessions = sessionItems.slice(0, 3);
+
   return (
-    <View style={styles.card}>
-      <View style={styles.cardHeaderRow}>
-        <Text style={styles.cardTitle}>Ma semaine</Text>
-        <View style={styles.accentPillLight}>
-          <Text style={styles.accentPillLightText}>7 jours glissants</Text>
+    <View style={styles.trainingCard}>
+      <Text style={styles.trainingTitle}>Entraînement</Text>
+
+      <View style={styles.trainingStatsRow}>
+        <View style={styles.trainingStat}>
+          <Text style={styles.trainingStatValue}>{totalSessions}</Text>
+          <Text style={styles.trainingStatLabel}>séances</Text>
+        </View>
+        <View style={styles.trainingStatDivider} />
+        <View style={styles.trainingStat}>
+          <Text style={styles.trainingStatValue}>{totalMinutes}</Text>
+          <Text style={styles.trainingStatLabel}>minutes</Text>
+        </View>
+        <View style={styles.trainingStatDivider} />
+        <View style={styles.trainingStat}>
+          <Text style={styles.trainingStatValue}>{plannedSessions}</Text>
+          <Text style={styles.trainingStatLabel}>prévues</Text>
         </View>
       </View>
-      <Text style={styles.cardSubtitle}>Planning automatique à partir d'aujourd'hui.</Text>
-      <View style={styles.weekRow}>
-        {sessions.map((session) => (
-          <PressableScale
-            key={session.id}
-            style={session.isRest ? styles.restCard : styles.weekCard}
-            onPress={() => onOpenSession(session)}
-          >
-            <View style={styles.weekCardHeader}>
-              <View>
-                <Text style={styles.weekDay}>{session.dayShort}</Text>
-                <Text style={styles.weekDate}>{session.dateLabel}</Text>
+
+      <Text style={styles.trainingWeekLabel}>CETTE SEMAINE</Text>
+
+      <View style={styles.trainingList}>
+        {upcomingSessions.map((session) => {
+          const { label, icon, tone } = getSessionTag(session);
+          const intensity = getIntensityFromFocus(session.focus);
+          const activityType = getTypeFromFocus(session.focus);
+          const dateLabel = formatSessionDateLabel(session);
+          const chipStyle =
+            intensity === "—" ? styles.trainingChipMuted : styles.trainingChipHighlight;
+          return (
+            <PressableScale
+              key={session.id}
+              style={[
+                styles.trainingSessionCard,
+                tone === "key" ? styles.trainingSessionKey : null,
+                tone === "recovery" ? styles.trainingSessionRecovery : null,
+              ]}
+              onPress={() => onOpenSession(session)}
+            >
+              <View style={styles.trainingSessionHeader}>
+                <Text style={styles.trainingSessionDate}>{dateLabel}</Text>
+                <View style={styles.trainingSessionTag}>
+                  <Text style={styles.trainingSessionTagText}>{`${icon} ${label}`}</Text>
+                </View>
               </View>
-              {session.isToday ? (
-                <View style={styles.todayBadge}>
-                  <Text style={styles.todayBadgeText}>Aujourd'hui</Text>
+
+              <View style={styles.trainingSessionTitleRow}>
+                <Text style={styles.trainingSessionTitle}>{session.title}</Text>
+                <Text style={styles.trainingSessionChevron}>›</Text>
+              </View>
+
+              <View style={styles.trainingChipRow}>
+                <View style={styles.trainingChip}>
+                  <Text style={styles.trainingChipText}>{`⏱ ${session.duration}`}</Text>
                 </View>
-              ) : null}
-            </View>
-            <View style={statusBadgeStyle(session.status)}>
-              <Text style={styles.statusText}>{session.status}</Text>
-            </View>
-            <Text style={styles.weekTitle}>{session.title}</Text>
-            <Text style={styles.weekMeta}>{session.duration}</Text>
-            <View style={styles.tagRow}>
-              {session.focus.map((tag) => (
-                <View key={tag} style={styles.tagPill}>
-                  <Text style={styles.tagPillText}>{tag}</Text>
+                <View style={[styles.trainingChip, chipStyle]}>
+                  <Text style={styles.trainingChipText}>{`🔥 ${intensity}`}</Text>
                 </View>
-              ))}
-            </View>
-          </PressableScale>
-        ))}
+                <View style={styles.trainingChip}>
+                  <Text style={styles.trainingChipText}>{`🏃 ${activityType}`}</Text>
+                </View>
+              </View>
+            </PressableScale>
+          );
+        })}
       </View>
+
+      <PressableScale
+        style={styles.primaryButtonBlue}
+        onPress={() => {
+          if (isLoggedIn === false) return;
+          onGenerateWeek?.();
+        }}
+      >
+        <Text style={styles.primaryButtonBlueText}>
+          {isGeneratingWeek ? "Génération..." : "Générer ma semaine"}
+        </Text>
+      </PressableScale>
+
       <PressableScale style={styles.primaryButton} onPress={onOpenPlanning}>
         <Text style={styles.primaryButtonText}>Voir le planning</Text>
       </PressableScale>
@@ -749,6 +822,17 @@ function SessionDetailScreen({ session, onBack }) {
   const recalcProgress = useRef(new Animated.Value(0)).current;
 
   const showSplits = (derivedIntervals?.reps || 0) > 0;
+  const intensity = getIntensityFromFocus(session.focus);
+  const activityType = getTypeFromFocus(session.focus);
+  const statusLabel = session.status === "Terminée" ? "Terminée" : "Prévue";
+  const longDateLabel = formatLongDateLabel(session);
+  const intervals = session.intervals || {};
+  const mainBlockLabel = derivedIntervals ? `${derivedIntervals.reps} x ${derivedIntervals.label}` : "—";
+  const warmupDuration = intervals.warmupDuration || intervals.warmup || "—";
+  const cooldownDuration = intervals.cooldownDuration || intervals.cooldown || "—";
+  const allureValue = intervals.allure || intervals.pace || "—";
+  const recupValue = intervals.recup || intervals.recovery || "—";
+  const volumeTotal = intervals.totalVolume || intervals.volume || "—";
 
   useEffect(() => {
     setSplits(Array.from({ length: derivedIntervals?.reps || 0 }, () => ""));
@@ -779,33 +863,109 @@ function SessionDetailScreen({ session, onBack }) {
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        <ScreenHeader title="Détail séance" onBack={onBack} />
-        <View style={styles.sessionHero}>
-          <Text style={styles.sessionHeroTitle}>{session.title}</Text>
-          <Text style={styles.sessionHeroSubtitle}>
-            {session.dayLabel} · {session.dateLabel} · {session.duration}
-          </Text>
-          <View style={styles.tagRow}>
-            {session.focus.map((tag) => (
-              <View key={tag} style={styles.tagPillDark}>
-                <Text style={styles.tagPillDarkText}>{tag}</Text>
+        <View style={styles.detailHeader}>
+          <PressableScale style={styles.detailBackButton} onPress={onBack}>
+            <Text style={styles.detailBackIcon}>←</Text>
+          </PressableScale>
+          <Text style={styles.detailDate}>{longDateLabel}</Text>
+          <View style={statusLabel === "Terminée" ? styles.detailStatusDone : styles.detailStatusPlanned}>
+            <Text style={styles.detailStatusText}>{statusLabel}</Text>
+          </View>
+        </View>
+
+        <Text style={styles.detailTitle}>{session.title}</Text>
+
+        <View style={styles.detailChipRow}>
+          <View style={styles.detailChip}>
+            <Text style={styles.detailChipText}>{`⏱ ${session.duration}`}</Text>
+          </View>
+          <View style={[styles.detailChip, intensity === "—" ? styles.detailChipMuted : styles.detailChipHighlight]}>
+            <Text style={styles.detailChipText}>{`🔥 ${intensity}`}</Text>
+          </View>
+          <View style={styles.detailChip}>
+            <Text style={styles.detailChipText}>{`🏃 ${activityType}`}</Text>
+          </View>
+        </View>
+
+        <View style={styles.detailSectionCard}>
+          <Text style={styles.detailSectionTitle}>OBJECTIF</Text>
+          <Text style={styles.detailPlaceholder}>—</Text>
+        </View>
+
+        <View style={styles.detailSectionCard}>
+          <Text style={styles.detailSectionTitle}>STRUCTURE</Text>
+          <View style={styles.structureBlock}>
+            <View style={styles.structureHeaderRow}>
+              <View style={styles.structureIcon}>
+                <Text style={styles.structureIconText}>≈</Text>
               </View>
-            ))}
+              <Text style={styles.structureTitle}>Échauffement</Text>
+              <Text style={styles.structureDuration}>{warmupDuration}</Text>
+            </View>
+            <Text style={styles.structureSubtitle}>—</Text>
+          </View>
+
+          <View style={styles.structureDivider} />
+
+          <View style={styles.structureBlock}>
+            <View style={styles.structureHeaderRow}>
+              <View style={styles.structureIcon}>
+                <Text style={styles.structureIconText}>▶</Text>
+              </View>
+              <Text style={styles.structureTitle}>Bloc principal</Text>
+            </View>
+            <Text style={styles.structureMainValue}>{mainBlockLabel}</Text>
+            <Text style={styles.structureSubtitle}>—</Text>
+            <View style={styles.structureMiniRow}>
+              <View style={styles.structureMiniCard}>
+                <Text style={styles.structureMiniLabel}>ALLURE</Text>
+                <Text style={styles.structureMiniValue}>{allureValue}</Text>
+              </View>
+              <View style={styles.structureMiniCard}>
+                <Text style={styles.structureMiniLabel}>RÉCUP</Text>
+                <Text style={styles.structureMiniValue}>{recupValue}</Text>
+              </View>
+            </View>
+            <Text style={styles.structureFootnote}>{`Volume total : ${volumeTotal}`}</Text>
+          </View>
+
+          <View style={styles.structureDivider} />
+
+          <View style={styles.structureBlock}>
+            <View style={styles.structureHeaderRow}>
+              <View style={styles.structureIcon}>
+                <Text style={styles.structureIconText}>↺</Text>
+              </View>
+              <Text style={styles.structureTitle}>Retour au calme</Text>
+              <Text style={styles.structureDuration}>{cooldownDuration}</Text>
+            </View>
+            <Text style={styles.structureSubtitle}>—</Text>
           </View>
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Rappel de séance</Text>
-          <Text style={styles.cardSubtitle}>{session.description}</Text>
-          <View style={styles.sessionInfoRow}>
-            <InfoPill label="Intensité" value={session.intensity} />
-            <InfoPill label="Type" value={session.type} />
+        <View style={styles.detailSectionCard}>
+          <Text style={styles.detailSectionTitle}>REPÈRES D'EFFORT</Text>
+          <View style={styles.effortRow}>
+            <Text style={styles.effortIcon}>◎</Text>
+            <Text style={styles.effortText}>RPE cible : —</Text>
+          </View>
+          <View style={styles.effortRow}>
+            <Text style={styles.effortIcon}>♡</Text>
+            <Text style={styles.effortText}>Respiration : —</Text>
+          </View>
+          <View style={styles.effortRow}>
+            <Text style={styles.effortIcon}>△</Text>
+            <Text style={styles.effortText}>Si dérive FC &gt; —</Text>
           </View>
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Feedback</Text>
-          <Text style={styles.cardSubtitle}>Comment tu t'es senti aujourd'hui ?</Text>
+        <View style={styles.detailSectionCard}>
+          <Text style={styles.detailSectionTitle}>CONSEIL DU COACH</Text>
+          <Text style={styles.detailPlaceholder}>—</Text>
+        </View>
+
+        <View style={styles.detailSectionCard}>
+          <Text style={styles.detailSectionTitle}>FEEDBACK</Text>
           <TextInput
             style={styles.feedbackInput}
             value={feedback}
@@ -814,7 +974,7 @@ function SessionDetailScreen({ session, onBack }) {
             placeholderTextColor="#64748B"
             multiline
           />
-          <Text style={styles.sectionHeader}>Difficulté</Text>
+          <Text style={styles.detailSubsectionTitle}>Difficulté</Text>
           <View style={styles.difficultyRow}>
             {[
               { key: "easy", label: "Trop facile" },
@@ -826,11 +986,7 @@ function SessionDetailScreen({ session, onBack }) {
                 style={difficulty === item.key ? styles.difficultyChipActive : styles.difficultyChip}
                 onPress={() => setDifficulty(item.key)}
               >
-                <Text
-                  style={
-                    difficulty === item.key ? styles.difficultyChipTextActive : styles.difficultyChipText
-                  }
-                >
+                <Text style={difficulty === item.key ? styles.difficultyChipTextActive : styles.difficultyChipText}>
                   {item.label}
                 </Text>
               </PressableScale>
@@ -839,7 +995,7 @@ function SessionDetailScreen({ session, onBack }) {
 
           {showSplits ? (
             <View style={styles.splitBlock}>
-              <Text style={styles.sectionHeader}>{`Temps ${derivedIntervals.reps}x${derivedIntervals.label}`}</Text>
+              <Text style={styles.detailSubsectionTitle}>{`Temps ${derivedIntervals.reps}x${derivedIntervals.label}`}</Text>
               <View style={styles.splitGrid}>
                 {splits.map((value, index) => (
                   <View key={`split-${index}`} style={styles.splitInputWrapper}>
@@ -859,17 +1015,29 @@ function SessionDetailScreen({ session, onBack }) {
               </View>
             </View>
           ) : null}
-        </View>
 
-        <PressableScale style={styles.primaryButtonBlue} onPress={handleValidate}>
-          <Text style={styles.primaryButtonBlueText}>Valider le feedback</Text>
-        </PressableScale>
-        {isSubmitting ? (
-          <View style={styles.loadingRow}>
-            <ActivityIndicator color="#2563EB" />
-            <Text style={styles.loadingText}>Validation et recalcul en cours...</Text>
-          </View>
-        ) : null}
+          <PressableScale style={styles.primaryButtonBlue} onPress={handleValidate}>
+            <Text style={styles.primaryButtonBlueText}>
+              {isSubmitting ? "Enregistrement..." : "Valider le feedback"}
+            </Text>
+          </PressableScale>
+
+          {isSubmitting ? (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator color="#2563EB" />
+              <Text style={styles.loadingText}>Validation en cours...</Text>
+            </View>
+          ) : null}
+
+          {showRecalc ? (
+            <View style={styles.feedbackSaved}>
+              <Text style={styles.feedbackSavedTitle}>Feedback enregistré</Text>
+              <Text style={styles.feedbackSavedSubtitle}>
+                Ton retour aide à adapter tes prochaines séances.
+              </Text>
+            </View>
+          ) : null}
+        </View>
 
         {showRecalc ? (
           <View style={styles.recalcCard}>
@@ -883,25 +1051,25 @@ function SessionDetailScreen({ session, onBack }) {
               </Text>
             </PressableScale>
             {isRecalculating ? (
-              <View style={styles.loadingRow}>
-                <ActivityIndicator color="#0B0D12" />
-                <Text style={styles.loadingText}>Recalcul des prochaines semaines...</Text>
-              </View>
-            ) : null}
-            {isRecalculating ? (
-              <View style={styles.recalcBar}>
-                <Animated.View
-                  style={[
-                    styles.recalcFill,
-                    {
-                      width: recalcProgress.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: ["5%", "100%"],
-                      }),
-                    },
-                  ]}
-                />
-              </View>
+              <>
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator color="#0B0D12" />
+                  <Text style={styles.loadingText}>Recalcul des prochaines semaines...</Text>
+                </View>
+                <View style={styles.recalcBar}>
+                  <Animated.View
+                    style={[
+                      styles.recalcFill,
+                      {
+                        width: recalcProgress.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: ["5%", "100%"],
+                        }),
+                      },
+                    ]}
+                  />
+                </View>
+              </>
             ) : null}
           </View>
         ) : null}
@@ -1127,6 +1295,79 @@ function statusBadgeStyle(status) {
   return styles.statusBadgeSkipped;
 }
 
+function parseMinutesFromDuration(duration) {
+  const match = String(duration || "").match(/(\d+)\s*min/i);
+  if (!match) return 0;
+  return Number(match[1]) || 0;
+}
+
+function getIntensityFromFocus(focus = []) {
+  const values = Array.isArray(focus) ? focus : [focus];
+  const normalized = values.map((value) => String(value).toLowerCase());
+  if (normalized.some((value) => value.includes("dur"))) return "Dur";
+  if (normalized.some((value) => value.includes("facile"))) return "Facile";
+  if (normalized.some((value) => value.includes("modéré") || value.includes("modere")))
+    return "Modéré";
+  return "—";
+}
+
+function getTypeFromFocus(focus = []) {
+  const values = Array.isArray(focus) ? focus : [focus];
+  const normalized = values.map((value) => String(value).toLowerCase());
+  if (normalized.some((value) => value.includes("running"))) return "Running";
+  return "—";
+}
+
+function getSessionTag(session) {
+  const focus = Array.isArray(session?.focus) ? session.focus : [];
+  const normalized = focus.map((value) => String(value).toLowerCase());
+  if (
+    normalized.some((value) => value.includes("clé") || value.includes("cle")) ||
+    String(session?.title || "").toLowerCase().includes("clé")
+  ) {
+    return { label: "Séance clé", icon: "⚡", tone: "key" };
+  }
+  if (
+    normalized.some((value) => value.includes("récup") || value.includes("recup")) ||
+    String(session?.title || "").toLowerCase().includes("récup")
+  ) {
+    return { label: "Récupération", icon: "🛌", tone: "recovery" };
+  }
+  return { label: "Séance", icon: "🏃", tone: "default" };
+}
+
+function formatSessionDateLabel(session) {
+  const date = parseISODate(session?.dateKey || session?.date);
+  if (!date) return session?.dateLabel || "—";
+  const today = new Date();
+  const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const startTarget = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.round((startTarget - startToday) / (24 * 60 * 60 * 1000));
+  const dayLabel = FULL_DAY_LABELS[getDayKey(date)] || "";
+  const monthShort = monthShortLabels[date.getMonth()];
+  const monthFull = monthLabels[date.getMonth()].toLowerCase();
+  const shortLabel = `${date.getDate()} ${monthShort}`;
+  if (diffDays === 0) return `Aujourd'hui · ${shortLabel}`;
+  if (diffDays === 1) return `Demain · ${shortLabel}`;
+  return `${dayLabel} ${date.getDate()} ${monthFull} · ${shortLabel}`;
+}
+
+function parseISODate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+}
+
+function formatLongDateLabel(session) {
+  const date = parseISODate(session?.dateKey || session?.date);
+  if (!date) return session?.dateLabel || "—";
+  const dayLabel = FULL_DAY_LABELS[getDayKey(date)];
+  const monthFull = monthLabels[date.getMonth()];
+  return `${dayLabel} ${date.getDate()} ${monthFull}`;
+}
+
 function buildRollingWeek(sessionMap) {
   const today = new Date();
   return Array.from({ length: 7 }, (_, index) => {
@@ -1137,6 +1378,7 @@ function buildRollingWeek(sessionMap) {
     return {
       ...session,
       id: `${dayKey}-${date.toDateString()}`,
+      dateKey: formatISODate(date),
       dayKey,
       dayShort: SHORT_DAY_LABELS[dayKey],
       dayLabel: FULL_DAY_LABELS[dayKey],
@@ -1170,6 +1412,7 @@ function buildWeeksForMonth(year, monthIndex, sessionMap) {
       return {
         ...session,
         id: `${monthIndex}-${weekIndex}-${dayKey}`,
+        dateKey: formatISODate(date),
         dayKey,
         dayLabel: FULL_DAY_LABELS[dayKey],
         dateLabel: formatDate(date),
@@ -1399,6 +1642,138 @@ const styles = StyleSheet.create({
   cardSubtitle: {
     fontSize: 14,
     color: "#52607A",
+  },
+  trainingCard: {
+    backgroundColor: "#0B0D12",
+    borderRadius: 28,
+    padding: 20,
+    marginBottom: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    shadowColor: "#0B0D12",
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 3,
+  },
+  trainingTitle: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    marginBottom: 16,
+  },
+  trainingStatsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 18,
+  },
+  trainingStat: {
+    flex: 1,
+    alignItems: "center",
+  },
+  trainingStatValue: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    marginBottom: 4,
+  },
+  trainingStatLabel: {
+    fontSize: 12,
+    color: "rgba(255,255,255,0.6)",
+    textTransform: "lowercase",
+  },
+  trainingStatDivider: {
+    width: 1,
+    height: 36,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  trainingWeekLabel: {
+    fontSize: 12,
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    color: "rgba(255,255,255,0.55)",
+    marginBottom: 12,
+  },
+  trainingList: {
+    gap: 12,
+    marginBottom: 12,
+  },
+  trainingSessionCard: {
+    borderRadius: 22,
+    padding: 16,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  trainingSessionKey: {
+    backgroundColor: "#5C3A30",
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  trainingSessionRecovery: {
+    backgroundColor: "#35556E",
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  trainingSessionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  trainingSessionDate: {
+    fontSize: 12,
+    color: "rgba(255,255,255,0.75)",
+    fontWeight: "600",
+  },
+  trainingSessionTag: {
+    backgroundColor: "rgba(255,255,255,0.12)",
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+  },
+  trainingSessionTagText: {
+    fontSize: 11,
+    color: "#FFFFFF",
+    fontWeight: "600",
+  },
+  trainingSessionTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  trainingSessionTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    flex: 1,
+    paddingRight: 10,
+  },
+  trainingSessionChevron: {
+    fontSize: 22,
+    color: "rgba(255,255,255,0.7)",
+  },
+  trainingChipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  trainingChip: {
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderRadius: 14,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  trainingChipText: {
+    fontSize: 12,
+    color: "#FFFFFF",
+    fontWeight: "600",
+  },
+  trainingChipHighlight: {
+    backgroundColor: "rgba(255, 190, 130, 0.25)",
+  },
+  trainingChipMuted: {
+    backgroundColor: "rgba(255,255,255,0.08)",
   },
   accentBadge: {
     backgroundColor: "rgba(37, 99, 235, 0.12)",
@@ -2081,6 +2456,212 @@ const styles = StyleSheet.create({
   chatSendTextDisabled: {
     color: "#94A3B8",
     fontWeight: "700",
+  },
+  detailHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 16,
+  },
+  detailBackButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: "#0B0D12",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  detailBackIcon: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  detailDate: {
+    flex: 1,
+    fontSize: 14,
+    color: "#52607A",
+    fontWeight: "600",
+  },
+  detailStatusDone: {
+    backgroundColor: "rgba(34, 197, 94, 0.16)",
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+  },
+  detailStatusPlanned: {
+    backgroundColor: "rgba(148, 163, 184, 0.2)",
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+  },
+  detailStatusText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#0B0D12",
+  },
+  detailTitle: {
+    fontSize: 28,
+    fontWeight: "700",
+    color: "#0B0D12",
+    marginBottom: 12,
+  },
+  detailChipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginBottom: 16,
+  },
+  detailChip: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+  },
+  detailChipText: {
+    fontSize: 12,
+    color: "#0B0D12",
+    fontWeight: "600",
+  },
+  detailChipHighlight: {
+    backgroundColor: "rgba(255, 190, 130, 0.25)",
+    borderColor: "rgba(255, 190, 130, 0.35)",
+  },
+  detailChipMuted: {
+    backgroundColor: "#F4F5F7",
+  },
+  detailSectionCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 22,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    marginBottom: 16,
+  },
+  detailSectionTitle: {
+    fontSize: 12,
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    color: "#64748B",
+    marginBottom: 10,
+    fontWeight: "700",
+  },
+  detailPlaceholder: {
+    fontSize: 14,
+    color: "#94A3B8",
+  },
+  detailSubsectionTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#0B0D12",
+    marginBottom: 8,
+  },
+  structureBlock: {
+    marginBottom: 12,
+  },
+  structureHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 8,
+  },
+  structureIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    backgroundColor: "#F4F5F7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  structureIconText: {
+    fontSize: 14,
+    color: "#2563EB",
+    fontWeight: "700",
+  },
+  structureTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#0B0D12",
+    flex: 1,
+  },
+  structureDuration: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0B0D12",
+  },
+  structureSubtitle: {
+    fontSize: 13,
+    color: "#52607A",
+  },
+  structureMainValue: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#0B0D12",
+    marginBottom: 6,
+  },
+  structureMiniRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  structureMiniCard: {
+    flex: 1,
+    backgroundColor: "#F4F5F7",
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  structureMiniLabel: {
+    fontSize: 11,
+    color: "#64748B",
+    marginBottom: 4,
+  },
+  structureMiniValue: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0B0D12",
+  },
+  structureFootnote: {
+    fontSize: 12,
+    color: "#64748B",
+  },
+  structureDivider: {
+    height: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.08)",
+    marginVertical: 12,
+  },
+  effortRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 10,
+  },
+  effortIcon: {
+    fontSize: 14,
+    color: "#2563EB",
+  },
+  effortText: {
+    fontSize: 13,
+    color: "#0B0D12",
+    fontWeight: "600",
+  },
+  feedbackSaved: {
+    marginTop: 14,
+    backgroundColor: "rgba(37, 99, 235, 0.08)",
+    borderRadius: 16,
+    padding: 12,
+  },
+  feedbackSavedTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#2563EB",
+    marginBottom: 4,
+  },
+  feedbackSavedSubtitle: {
+    fontSize: 12,
+    color: "#52607A",
   },
   sessionHero: {
     backgroundColor: "#0B0D12",
