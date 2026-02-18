@@ -308,12 +308,12 @@ function SettingsScreen() {
   );
 }
 
-function CoachTabScreen({ hasCompletedOnboarding, onComplete }) {
+function CoachTabScreen({ navigation, hasCompletedOnboarding, onComplete }) {
   if (!hasCompletedOnboarding) {
-    return <CoachOnboarding onDone={onComplete} />;
+    return <CoachOnboarding navigation={navigation} onDone={onComplete} />;
   }
 
-  return <CoachDashboard />;
+  return <CoachDashboard navigation={navigation} />;
 }
 
 function AppTabs({ hasCompletedOnboarding, onCompleteOnboarding }) {
@@ -355,6 +355,7 @@ function AppTabs({ hasCompletedOnboarding, onCompleteOnboarding }) {
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
+        lazy: true,
         headerShown: false,
         tabBarShowLabel: true,
         tabBarLabelStyle: {
