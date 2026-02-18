@@ -9,6 +9,7 @@ import {
   Pressable,
   SafeAreaView,
   ScrollView,
+  StatusBar,
   Text,
   UIManager,
   View,
@@ -52,7 +53,7 @@ async function getAccessToken() {
 const TAB_CONFIG = [
   { key: "accueil", label: "Accueil", icon: "⌂" },
   { key: "progression", label: "Progression", icon: "◔" },
-  { key: "coach", label: "Coach", icon: "◎" },
+  { key: "coach", label: "Coach", icon: "◎", isCoach: true },
   { key: "planning", label: "Planning", icon: "▦" },
   { key: "parametres", label: "Paramètres", icon: "⚙" },
 ];
@@ -66,49 +67,77 @@ function ParametresScreen() {
 }
 
 function TabButton({ tab, active, onPress }) {
-  const scaleAnim = useRef(new Animated.Value(active ? 1 : 0)).current;
+  const pressAnim = useRef(new Animated.Value(1)).current;
+  const activeAnim = useRef(new Animated.Value(active ? 1 : 0)).current;
 
   useEffect(() => {
-    Animated.spring(scaleAnim, {
+    Animated.timing(activeAnim, {
       toValue: active ? 1 : 0,
-      damping: 16,
-      mass: 0.9,
-      stiffness: 230,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
-  }, [active, scaleAnim]);
+  }, [active, activeAnim]);
 
   const handlePressIn = () => {
-    Animated.spring(scaleAnim, {
-      toValue: active ? 0.92 : 0.84,
-      damping: 12,
-      stiffness: 300,
-      mass: 0.7,
+    Animated.spring(pressAnim, {
+      toValue: 0.96,
       useNativeDriver: true,
+      damping: 15,
+      stiffness: 290,
+      mass: 0.75,
     }).start();
   };
 
   const handlePressOut = () => {
-    Animated.spring(scaleAnim, {
-      toValue: active ? 1 : 0,
-      damping: 16,
-      stiffness: 230,
-      mass: 0.9,
+    Animated.spring(pressAnim, {
+      toValue: 1,
       useNativeDriver: true,
+      damping: 15,
+      stiffness: 290,
+      mass: 0.75,
     }).start();
   };
 
-  const iconScale = scaleAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 1.08],
-  });
+  if (tab.isCoach) {
+    const coachGlowOpacity = activeAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0.4, 1],
+    });
 
-  const labelOpacity = scaleAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.7, 1],
-  });
+    return (
+      <Pressable
+        style={localStyles.tabButtonCoachPressable}
+        onPress={onPress}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+      >
+        <Animated.View
+          style={[
+            localStyles.coachGlow,
+            {
+              opacity: coachGlowOpacity,
+              transform: [{ scale: pressAnim }],
+            },
+          ]}
+        />
+        <Animated.View
+          style={[
+            localStyles.coachButton,
+            active ? localStyles.coachButtonActive : null,
+            { transform: [{ scale: pressAnim }] },
+          ]}
+        >
+          <Text style={localStyles.coachButtonIcon}>{tab.icon}</Text>
+        </Animated.View>
+        <Text style={[localStyles.tabLabel, localStyles.coachTabLabel, active ? localStyles.tabLabelActive : null]}>
+          {tab.label}
+        </Text>
+      </Pressable>
+    );
+  }
 
-  const indicatorOpacity = scaleAnim.interpolate({
+  const indicatorOpacity = activeAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [0, 1],
   });
@@ -125,22 +154,14 @@ function TabButton({ tab, active, onPress }) {
           localStyles.activeIndicator,
           {
             opacity: indicatorOpacity,
-            transform: [{ scaleX: scaleAnim.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1] }) }],
+            transform: [{ scaleX: activeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.7, 1] }) }],
           },
         ]}
       />
-      <Animated.Text style={[localStyles.tabIcon, { transform: [{ scale: iconScale }] }]}>
-        {tab.icon}
-      </Animated.Text>
-      <Animated.Text
-        style={[
-          localStyles.tabLabel,
-          active ? localStyles.tabLabelActive : null,
-          { opacity: labelOpacity },
-        ]}
-      >
-        {tab.label}
-      </Animated.Text>
+      <Animated.View style={{ transform: [{ scale: pressAnim }] }}>
+        <Text style={[localStyles.tabIcon, active ? localStyles.tabIconActive : null]}>{tab.icon}</Text>
+      </Animated.View>
+      <Text style={[localStyles.tabLabel, active ? localStyles.tabLabelActive : null]}>{tab.label}</Text>
     </Pressable>
   );
 }
@@ -622,6 +643,7 @@ export default function CoachDashboard({ navigation }) {
 
   return (
     <SafeAreaView style={[styles.safeArea, localStyles.safeAreaEnhanced]}>
+      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
       <Animated.View style={[localStyles.tabScreenContainer, tabScreenStyle]}>{renderActiveTab()}</Animated.View>
 
       <View style={localStyles.tabBarWrapper}>
@@ -647,72 +669,123 @@ export default function CoachDashboard({ navigation }) {
 
 const localStyles = {
   safeAreaEnhanced: {
-    backgroundColor: "#05070C",
+    flex: 1,
+    backgroundColor: "#060A14",
   },
   tabScreenContainer: {
     flex: 1,
   },
   scrollContentWithTabs: {
-    paddingBottom: 120,
+    paddingBottom: 132,
   },
   tabBarWrapper: {
     position: "absolute",
-    left: 14,
-    right: 14,
-    bottom: Platform.select({ ios: 18, android: 14, default: 14 }),
+    left: 0,
+    right: 0,
+    bottom: Platform.select({ ios: 8, android: 8, default: 8 }),
+    paddingHorizontal: 8,
+    paddingBottom: Platform.select({ ios: 10, android: 6, default: 6 }),
   },
   tabBar: {
+    width: "100%",
+    minHeight: 76,
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "flex-end",
-    borderRadius: 22,
-    paddingHorizontal: 8,
+    justifyContent: "space-between",
+    borderRadius: 26,
     paddingTop: 8,
     paddingBottom: 10,
-    backgroundColor: "rgba(10, 14, 22, 0.86)",
+    paddingHorizontal: 8,
+    backgroundColor: "#0B1120",
     borderWidth: 1,
-    borderColor: "rgba(138, 163, 255, 0.14)",
+    borderColor: "rgba(37, 99, 235, 0.20)",
     shadowColor: "#000",
-    shadowOpacity: 0.45,
+    shadowOpacity: 0.32,
     shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 18,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 20,
   },
   tabButton: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 4,
     minHeight: 56,
+    paddingVertical: 4,
+  },
+  tabButtonCoachPressable: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "flex-end",
+    minHeight: 76,
+    marginTop: -26,
   },
   activeIndicator: {
     position: "absolute",
-    top: 2,
-    width: 26,
+    top: 4,
+    width: 24,
     height: 3,
     borderRadius: 99,
-    backgroundColor: "#6D8CFF",
+    backgroundColor: "#2563EB",
   },
   tabIcon: {
-    color: "#E8ECFF",
+    color: "#A6B3CE",
     fontSize: 18,
     fontWeight: "700",
-    marginBottom: 4,
+    marginBottom: 2,
+  },
+  tabIconActive: {
+    color: "#2563EB",
   },
   tabLabel: {
     fontSize: 11,
-    color: "#A2ADC8",
+    color: "#A6B3CE",
     fontWeight: "600",
   },
   tabLabelActive: {
-    color: "#F2F5FF",
+    color: "#2563EB",
+  },
+  coachGlow: {
+    position: "absolute",
+    top: 0,
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    backgroundColor: "rgba(37, 99, 235, 0.22)",
+    shadowColor: "#2563EB",
+    shadowOpacity: 0.35,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 16,
+  },
+  coachButton: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    marginBottom: 6,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#1D4ED8",
+    borderWidth: 1,
+    borderColor: "rgba(191, 219, 254, 0.35)",
+  },
+  coachButtonActive: {
+    backgroundColor: "#2563EB",
+  },
+  coachButtonIcon: {
+    color: "#F8FAFF",
+    fontSize: 24,
+    fontWeight: "800",
+    marginTop: -1,
+  },
+  coachTabLabel: {
+    marginTop: 0,
   },
   simpleScreen: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#05070C",
-    paddingBottom: 90,
+    backgroundColor: "#060A14",
+    paddingBottom: 86,
   },
   simpleScreenTitle: {
     color: "#F2F5FF",
