@@ -1,5 +1,4 @@
 import "react-native-gesture-handler";
-import "react-native-reanimated";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
