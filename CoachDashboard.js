@@ -9,7 +9,6 @@ import {
   Pressable,
   SafeAreaView,
   ScrollView,
-  StatusBar,
   Text,
   UIManager,
   View,
@@ -53,7 +52,7 @@ async function getAccessToken() {
 const TAB_CONFIG = [
   { key: "accueil", label: "Accueil", icon: "⌂" },
   { key: "progression", label: "Progression", icon: "◔" },
-  { key: "coach", label: "Coach", icon: "◎", isCoach: true },
+  { key: "coach", label: "Coach", icon: "◎" },
   { key: "planning", label: "Planning", icon: "▦" },
   { key: "parametres", label: "Paramètres", icon: "⚙" },
 ];
@@ -99,44 +98,6 @@ function TabButton({ tab, active, onPress }) {
     }).start();
   };
 
-  if (tab.isCoach) {
-    const coachGlowOpacity = activeAnim.interpolate({
-      inputRange: [0, 1],
-      outputRange: [0.4, 1],
-    });
-
-    return (
-      <Pressable
-        style={localStyles.tabButtonCoachPressable}
-        onPress={onPress}
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
-      >
-        <Animated.View
-          style={[
-            localStyles.coachGlow,
-            {
-              opacity: coachGlowOpacity,
-              transform: [{ scale: pressAnim }],
-            },
-          ]}
-        />
-        <Animated.View
-          style={[
-            localStyles.coachButton,
-            active ? localStyles.coachButtonActive : null,
-            { transform: [{ scale: pressAnim }] },
-          ]}
-        >
-          <Text style={localStyles.coachButtonIcon}>{tab.icon}</Text>
-        </Animated.View>
-        <Text style={[localStyles.tabLabel, localStyles.coachTabLabel, active ? localStyles.tabLabelActive : null]}>
-          {tab.label}
-        </Text>
-      </Pressable>
-    );
-  }
-
   const indicatorOpacity = activeAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [0, 1],
@@ -154,7 +115,7 @@ function TabButton({ tab, active, onPress }) {
           localStyles.activeIndicator,
           {
             opacity: indicatorOpacity,
-            transform: [{ scaleX: activeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.7, 1] }) }],
+            transform: [{ scaleX: activeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1] }) }],
           },
         ]}
       />
@@ -643,7 +604,6 @@ export default function CoachDashboard({ navigation }) {
 
   return (
     <SafeAreaView style={[styles.safeArea, localStyles.safeAreaEnhanced]}>
-      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
       <Animated.View style={[localStyles.tabScreenContainer, tabScreenStyle]}>{renderActiveTab()}</Animated.View>
 
       <View style={localStyles.tabBarWrapper}>
@@ -670,7 +630,7 @@ export default function CoachDashboard({ navigation }) {
 const localStyles = {
   safeAreaEnhanced: {
     flex: 1,
-    backgroundColor: "#060A14",
+    backgroundColor: "transparent",
   },
   tabScreenContainer: {
     flex: 1,
@@ -682,48 +642,42 @@ const localStyles = {
     position: "absolute",
     left: 0,
     right: 0,
-    bottom: Platform.select({ ios: 8, android: 8, default: 8 }),
-    paddingHorizontal: 8,
-    paddingBottom: Platform.select({ ios: 10, android: 6, default: 6 }),
+    bottom: 0,
+    paddingHorizontal: 0,
+    paddingBottom: 0,
   },
   tabBar: {
     width: "100%",
-    minHeight: 76,
+    minHeight: 74,
     flexDirection: "row",
-    alignItems: "flex-end",
+    alignItems: "center",
     justifyContent: "space-between",
-    borderRadius: 26,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
     paddingTop: 8,
-    paddingBottom: 10,
+    paddingBottom: Platform.select({ ios: 16, android: 10, default: 10 }),
     paddingHorizontal: 8,
-    backgroundColor: "#0B1120",
-    borderWidth: 1,
-    borderColor: "rgba(37, 99, 235, 0.20)",
+    backgroundColor: "#0F172A",
+    borderTopWidth: 1,
+    borderColor: "rgba(37, 99, 235, 0.16)",
     shadowColor: "#000",
-    shadowOpacity: 0.32,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 20,
+    shadowOpacity: 0.14,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: -2 },
+    elevation: 8,
   },
   tabButton: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 56,
+    minHeight: 52,
     paddingVertical: 4,
-  },
-  tabButtonCoachPressable: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "flex-end",
-    minHeight: 76,
-    marginTop: -26,
   },
   activeIndicator: {
     position: "absolute",
-    top: 4,
-    width: 24,
-    height: 3,
+    top: 0,
+    width: 22,
+    height: 2,
     borderRadius: 99,
     backgroundColor: "#2563EB",
   },
@@ -739,46 +693,10 @@ const localStyles = {
   tabLabel: {
     fontSize: 11,
     color: "#A6B3CE",
-    fontWeight: "600",
+    fontWeight: "500",
   },
   tabLabelActive: {
     color: "#2563EB",
-  },
-  coachGlow: {
-    position: "absolute",
-    top: 0,
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    backgroundColor: "rgba(37, 99, 235, 0.22)",
-    shadowColor: "#2563EB",
-    shadowOpacity: 0.35,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 16,
-  },
-  coachButton: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    marginBottom: 6,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#1D4ED8",
-    borderWidth: 1,
-    borderColor: "rgba(191, 219, 254, 0.35)",
-  },
-  coachButtonActive: {
-    backgroundColor: "#2563EB",
-  },
-  coachButtonIcon: {
-    color: "#F8FAFF",
-    fontSize: 24,
-    fontWeight: "800",
-    marginTop: -1,
-  },
-  coachTabLabel: {
-    marginTop: 0,
   },
   simpleScreen: {
     flex: 1,
