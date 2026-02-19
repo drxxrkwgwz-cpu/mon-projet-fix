@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Pressable, Text, TextInput, View } from "react-native";
+import { Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { styles, FULL_DAY_LABELS } from "./backend";
 import { PressableScale } from "./SessionDetail";
 
@@ -11,9 +11,7 @@ function DashboardHeader({ title, subtitle, isLoggedIn, onLogout }) {
       <View style={styles.headerTextBlock}>
         <Text style={styles.headerTitle}>{title}</Text>
         <Text style={styles.headerSubtitle}>{subtitle}</Text>
-        <Text style={styles.headerState}>
-          {isLoggedIn ? "Connecté" : "Non connecté"}
-        </Text>
+        <Text style={styles.headerState}>{isLoggedIn ? "Connecté" : "Non connecté"}</Text>
       </View>
       {isLoggedIn ? (
         <Pressable onPress={onLogout} style={styles.logoutButton}>
@@ -44,9 +42,7 @@ function ProfileCard({ coachProfile, profileSummary, expanded, onToggle, onProfi
         } else {
           next[path] = value;
         }
-        if (onProfileChange) {
-          onProfileChange(next);
-        }
+        if (onProfileChange) onProfileChange(next);
         return next;
       });
     },
@@ -57,14 +53,12 @@ function ProfileCard({ coachProfile, profileSummary, expanded, onToggle, onProfi
     <View style={styles.card}>
       <View style={styles.cardHeaderRow}>
         <Text style={styles.cardTitle}>Profil</Text>
-        <View style={styles.row}>
+        <View style={localStyles.headerActions}>
           <PressableScale
             onPress={() => setIsEditing((prev) => !prev)}
-            style={styles.primaryButtonBlue}
+            style={localStyles.editFab}
           >
-            <Text style={styles.primaryButtonBlueText}>
-              {isEditing ? "Terminer" : "Modifier mon profil"}
-            </Text>
+            <Text style={localStyles.editFabIcon}>{isEditing ? "✓" : "✏️"}</Text>
           </PressableScale>
           <View style={styles.accentBadge}>
             <Text style={styles.accentBadgeText}>{profileSummary.levelLabel}</Text>
@@ -91,9 +85,7 @@ function ProfileCard({ coachProfile, profileSummary, expanded, onToggle, onProfi
             </>
           ) : (
             <>
-              <Text style={styles.profileName}>
-                {draftProfile.coachCallsYou || "Athlète"}
-              </Text>
+              <Text style={styles.profileName}>{draftProfile.coachCallsYou || "Athlète"}</Text>
               <Text style={styles.profileSubtitle}>
                 {draftProfile.appellation || "Profil sportif"}
               </Text>
@@ -118,9 +110,7 @@ function ProfileCard({ coachProfile, profileSummary, expanded, onToggle, onProfi
               />
             </>
           ) : (
-            <Text style={styles.profileMetaValue}>
-              {draftProfile.goal?.title || "À définir"}
-            </Text>
+            <Text style={styles.profileMetaValue}>{draftProfile.goal?.title || "À définir"}</Text>
           )}
         </View>
       </View>
@@ -134,18 +124,12 @@ function ProfileCard({ coachProfile, profileSummary, expanded, onToggle, onProfi
       {expanded ? (
         <View style={styles.expandedBlock}>
           <View style={styles.sectionDivider} />
-          <InfoLine
-            label="Disciplines"
-            value={profileSummary.disciplines.join(" · ")}
-          />
+          <InfoLine label="Disciplines" value={profileSummary.disciplines.join(" · ")} />
           <View style={styles.row}>
             <InfoLine label="Fatigue" value={profileSummary.fatigueLabel} />
             <InfoLine label="Niveau" value={profileSummary.levelLabel} />
           </View>
-          <InfoLine
-            label="Jours d'entraînement"
-            value={profileSummary.trainingDays}
-          />
+          <InfoLine label="Jours d'entraînement" value={profileSummary.trainingDays} />
           <InfoLine label="Matériel" value={profileSummary.equipmentList} />
           <InfoLine
             label="Contraintes santé"
@@ -160,15 +144,11 @@ function ProfileCard({ coachProfile, profileSummary, expanded, onToggle, onProfi
           <Text style={styles.sectionHeader}>PRs clés</Text>
           <View style={styles.chipRow}>
             {profileSummary.profilePRs.length === 0 ? (
-              <Text style={styles.cardSubtitle}>
-                Aucun record renseigné.
-              </Text>
+              <Text style={styles.cardSubtitle}>Aucun record renseigné.</Text>
             ) : (
               profileSummary.profilePRs.map(([discipline, value]) => (
                 <View key={discipline} style={styles.chipDark}>
-                  <Text style={styles.chipDarkText}>
-                    {`${discipline} · ${value}`}
-                  </Text>
+                  <Text style={styles.chipDarkText}>{`${discipline} · ${value}`}</Text>
                 </View>
               ))
             )}
@@ -196,22 +176,8 @@ function WeekOverview({
   isGeneratingWeek,
   isLoggedIn,
 }) {
-  const today = useMemo(() => new Date(), []);
   const monthShort = useMemo(
-    () => [
-      "janv.",
-      "févr.",
-      "mars",
-      "avr.",
-      "mai",
-      "juin",
-      "juil.",
-      "août",
-      "sept.",
-      "oct.",
-      "nov.",
-      "déc.",
-    ],
+    () => ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."],
     []
   );
 
@@ -220,62 +186,13 @@ function WeekOverview({
     return match ? Number(match[1]) : 0;
   }, []);
 
-  const getIntensityLabel = useCallback((session) => {
-    const all = (session?.focus || []).join(" ").toLowerCase();
-    if (all.includes("dur")) return "Dur";
-    if (all.includes("facile")) return "Facile";
-    if (all.includes("modéré") || all.includes("modere")) return "Modéré";
-    return "—";
-  }, []);
-
-  const getTypeLabel = useCallback((session) => {
-    const all = (session?.focus || []).join(" ").toLowerCase();
-    if (all.includes("running")) return "Running";
-    if (all.includes("muscu") || all.includes("force")) return "Muscu";
-    if (all.includes("vitesse")) return "Vitesse";
-    if (session?.type && session.type !== "À définir") return session.type;
-    return "—";
-  }, []);
-
-  const isRecoverySession = useCallback((session) => {
-    const all = `${session?.title || ""} ${(session?.focus || []).join(
-      " "
-    )}`.toLowerCase();
-    return (
-      all.includes("récup") ||
-      all.includes("recup") ||
-      all.includes("récupération") ||
-      all.includes("recuperation")
-    );
-  }, []);
-
-  const isKeySession = useCallback((session) => {
-    const all = `${session?.title || ""} ${(session?.focus || []).join(
-      " "
-    )}`.toLowerCase();
-    return (
-      all.includes("clé") ||
-      all.includes("cle") ||
-      all.includes("key") ||
-      all.includes("spécifique") ||
-      all.includes("specifique")
-    );
-  }, []);
-
   const formatTopDate = useCallback(
     (session) => {
       const iso = session?.dateKey || session?.date;
       if (!iso) return "—";
       const d = new Date(iso);
-      const label =
-        session?.isToday
-          ? "Aujourd'hui"
-          : FULL_DAY_LABELS[session?.dayKey] ||
-            session?.dayLabel ||
-            "—";
-      const dayNum = d.getDate();
-      const month = monthShort[d.getMonth()];
-      return `${label} · ${dayNum} ${month}`;
+      const label = session?.isToday ? "Aujourd'hui" : FULL_DAY_LABELS[session?.dayKey] || session?.dayLabel || "—";
+      return `${label} · ${d.getDate()} ${monthShort[d.getMonth()]}`;
     },
     [monthShort]
   );
@@ -287,21 +204,18 @@ function WeekOverview({
 
   const stats = useMemo(() => {
     const seances = trainingSessions.length;
-    const minutes = trainingSessions.reduce(
-      (sum, s) => sum + parseMinutes(s.duration),
-      0
-    );
+    const minutes = trainingSessions.reduce((sum, s) => sum + parseMinutes(s.duration), 0);
     return { seances, minutes };
   }, [parseMinutes, trainingSessions]);
 
-  const nextSessions = useMemo(() => {
-    const sorted = [...trainingSessions].sort((a, b) => {
+  const weekSessions = useMemo(() => {
+    const sorted = [...(sessions || [])].sort((a, b) => {
       const aKey = a?.dateKey || a?.date || "";
       const bKey = b?.dateKey || b?.date || "";
       return aKey.localeCompare(bKey);
     });
-    return sorted.slice(0, 3);
-  }, [trainingSessions]);
+    return sorted.slice(0, 7);
+  }, [sessions]);
 
   return (
     <View style={styles.trainingSection}>
@@ -318,29 +232,25 @@ function WeekOverview({
         </View>
       </View>
 
-      {nextSessions.map((session) => (
-        <PressableScale
-          key={session.id}
-          style={styles.trainingSessionCard}
-          onPress={() => onOpenSession(session)}
-        >
-          <Text style={styles.trainingSessionDate}>
-            {formatTopDate(session)}
-          </Text>
-          <Text style={styles.trainingSessionTitle}>
-            {session.title}
-          </Text>
-        </PressableScale>
-      ))}
+      <View style={localStyles.weekList}>
+        {weekSessions.map((session) => (
+          <PressableScale
+            key={session.id}
+            style={[styles.trainingSessionCard, localStyles.weekCard]}
+            onPress={() => onOpenSession(session)}
+          >
+            <Text style={styles.trainingSessionDate}>{formatTopDate(session)}</Text>
+            <Text style={styles.trainingSessionTitle}>{session.title}</Text>
+            <Text style={localStyles.weekMeta}>{session.duration || "—"}</Text>
+          </PressableScale>
+        ))}
+      </View>
 
       <PressableScale
         style={styles.primaryButtonBlue}
         onPress={() => {
           if (!isLoggedIn) {
-            Alert.alert(
-              "Connexion requise",
-              "Connecte-toi pour générer une semaine."
-            );
+            Alert.alert("Connexion requise", "Connecte-toi pour générer une semaine.");
             return;
           }
           onGenerateWeek();
@@ -351,58 +261,21 @@ function WeekOverview({
         </Text>
       </PressableScale>
 
-      <PressableScale
-        style={styles.primaryButton}
-        onPress={onOpenPlanning}
-      >
-        <Text style={styles.primaryButtonText}>
-          Voir le planning
-        </Text>
-      </PressableScale>
-
-      <PressableScale
-        style={styles.primaryButtonBlue}
-        onPress={onOpenCurrentWeek}
-      >
-        <Text style={styles.primaryButtonBlueText}>
-          Voir ma semaine actuelle
-        </Text>
+      <PressableScale style={styles.primaryButton} onPress={onOpenPlanning}>
+        <Text style={styles.primaryButtonText}>Voir le planning</Text>
       </PressableScale>
     </View>
   );
 }
 
+/* ================= BLOCKS REMOVED FROM HOME ================= */
 
-
-/* ================= PROGRESSION BLOCK ================= */
-
-function ProgressBlock({ onOpenProgress }) {
-  return (
-    <View style={styles.progressCard}>
-      <View>
-        <Text style={styles.progressTitle}>Progression</Text>
-        <Text style={styles.progressSubtitle}>
-          Visualise tes performances.
-        </Text>
-      </View>
-      <PressableScale
-        style={styles.progressButton}
-        onPress={onOpenProgress}
-      >
-        <Text style={styles.progressButtonText}>
-          Voir ma progression
-        </Text>
-      </PressableScale>
-    </View>
-  );
+function ProgressBlock() {
+  return null;
 }
 
-function PrimaryCTA({ label, onPress }) {
-  return (
-    <PressableScale style={styles.primaryButtonLarge} onPress={onPress}>
-      <Text style={styles.primaryButtonLargeText}>{label}</Text>
-    </PressableScale>
-  );
+function PrimaryCTA() {
+  return null;
 }
 
 /* ================= HELPERS ================= */
@@ -424,6 +297,39 @@ function InfoPill({ label, value }) {
     </View>
   );
 }
+
+const localStyles = StyleSheet.create({
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  editFab: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F4F5F7",
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+  },
+  editFabIcon: {
+    fontSize: 13,
+  },
+  weekList: {
+    gap: 10,
+    marginTop: 4,
+  },
+  weekCard: {
+    width: "100%",
+  },
+  weekMeta: {
+    fontSize: 12,
+    color: "#52607A",
+    marginTop: 2,
+  },
+});
 
 export {
   DashboardHeader,
