@@ -128,6 +128,7 @@ const emptyCoachProfile = {
 
 export default function CoachDashboard({ route }) {
   const [isProfileExpanded, setIsProfileExpanded] = useState(false);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [planningTab, setPlanningTab] = useState("Semaine");
   const [routeState, setRouteState] = useState({ name: "Dashboard", params: {} });
   const [selectedMonthIndex, setSelectedMonthIndex] = useState(new Date().getMonth());
@@ -151,9 +152,19 @@ export default function CoachDashboard({ route }) {
     }).start();
   }, [routeState.name, screenAnim]);
 
-  const coachProfile = route?.params?.coachProfile
-    ? { ...emptyCoachProfile, ...route.params.coachProfile }
-    : emptyCoachProfile;
+  const [coachProfile, setCoachProfile] = useState(() =>
+    route?.params?.coachProfile
+      ? { ...emptyCoachProfile, ...route.params.coachProfile }
+      : emptyCoachProfile
+  );
+
+  useEffect(() => {
+    setCoachProfile(
+      route?.params?.coachProfile
+        ? { ...emptyCoachProfile, ...route.params.coachProfile }
+        : emptyCoachProfile
+    );
+  }, [route?.params?.coachProfile]);
 
   const initialPerformanceEntries = useMemo(
     () => coachProfile.performanceEntries || [],
@@ -195,8 +206,25 @@ export default function CoachDashboard({ route }) {
 
   const goalTitle = coachProfile.goal?.title || "Objectif à définir";
   const goalDate = coachProfile.goal?.dateText || "Date à définir";
-  const coachName = coachProfile.coachName || "";
-  const chatLabel = coachName ? `Parler à ${coachName}` : "Parler au coach";
+  const handleProfileChange = useCallback((field, value) => {
+    setCoachProfile((prev) => {
+      if (field.startsWith("goal.")) {
+        const goalField = field.split(".")[1];
+        return {
+          ...prev,
+          goal: {
+            ...prev.goal,
+            [goalField]: value,
+          },
+        };
+      }
+
+      return {
+        ...prev,
+        [field]: value,
+      };
+    });
+  }, []);
 
   const rollingWeek = useMemo(() => buildRollingWeek(sessionMap), [sessionMap]);
 
@@ -295,6 +323,9 @@ export default function CoachDashboard({ route }) {
           profileSummary={profileSummary}
           expanded={isProfileExpanded}
           onToggle={toggleProfile}
+          isEditing={isEditingProfile}
+          onToggleEdit={() => setIsEditingProfile((prev) => !prev)}
+          onProfileChange={handleProfileChange}
         />
 
         <WeekOverview
@@ -303,9 +334,6 @@ export default function CoachDashboard({ route }) {
           onOpenSession={handleOpenSession}
         />
 
-        <ProgressBlock onOpenProgress={() => openRoute("Progression")} />
-
-        <PrimaryCTA label={chatLabel} onPress={() => openRoute("Chat")} />
       </ScrollView>
     </SafeAreaView>
   );
@@ -323,24 +351,75 @@ function DashboardHeader({ title, subtitle }) {
   );
 }
 
-function ProfileCard({ coachProfile, profileSummary, expanded, onToggle }) {
+function ProfileCard({
+  coachProfile,
+  profileSummary,
+  expanded,
+  onToggle,
+  isEditing,
+  onToggleEdit,
+  onProfileChange,
+}) {
   return (
     <View style={styles.card}>
       <View style={styles.cardHeaderRow}>
         <Text style={styles.cardTitle}>Profil</Text>
-        <View style={styles.accentBadge}>
-          <Text style={styles.accentBadgeText}>{profileSummary.levelLabel}</Text>
+        <View style={styles.profileHeaderActions}>
+          <PressableScale style={styles.profileEditButton} onPress={onToggleEdit}>
+            <Text style={styles.profileEditButtonText}>
+              {isEditing ? "Terminer" : "Modifier mon profil"}
+            </Text>
+          </PressableScale>
+          <View style={styles.accentBadge}>
+            <Text style={styles.accentBadgeText}>{profileSummary.levelLabel}</Text>
+          </View>
         </View>
       </View>
 
       <View style={styles.profileTopRow}>
         <View style={styles.profileIdentity}>
-          <Text style={styles.profileName}>{coachProfile.coachCallsYou || "Athlète"}</Text>
-          <Text style={styles.profileSubtitle}>{coachProfile.appellation || "Profil sportif"}</Text>
+          {isEditing ? (
+            <>
+              <TextInput
+                value={coachProfile.coachCallsYou}
+                onChangeText={(text) => onProfileChange("coachCallsYou", text)}
+                placeholder="Ton prénom"
+                style={styles.input}
+              />
+              <TextInput
+                value={coachProfile.appellation}
+                onChangeText={(text) => onProfileChange("appellation", text)}
+                placeholder="Profil sportif"
+                style={styles.input}
+              />
+            </>
+          ) : (
+            <>
+              <Text style={styles.profileName}>{coachProfile.coachCallsYou || "Athlète"}</Text>
+              <Text style={styles.profileSubtitle}>{coachProfile.appellation || "Profil sportif"}</Text>
+            </>
+          )}
         </View>
         <View style={styles.profileMetaCardLight}>
           <Text style={styles.profileMetaLabel}>Objectif</Text>
-          <Text style={styles.profileMetaValue}>{coachProfile.goal?.title || "À définir"}</Text>
+          {isEditing ? (
+            <>
+              <TextInput
+                value={coachProfile.goal?.title}
+                onChangeText={(text) => onProfileChange("goal.title", text)}
+                placeholder="Objectif"
+                style={styles.inputCompact}
+              />
+              <TextInput
+                value={coachProfile.goal?.dateText}
+                onChangeText={(text) => onProfileChange("goal.dateText", text)}
+                placeholder="Date"
+                style={styles.inputCompact}
+              />
+            </>
+          ) : (
+            <Text style={styles.profileMetaValue}>{coachProfile.goal?.title || "À définir"}</Text>
+          )}
         </View>
       </View>
 
@@ -1391,6 +1470,22 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 12,
   },
+  profileHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  profileEditButton: {
+    backgroundColor: "rgba(11, 13, 18, 0.08)",
+    borderRadius: 999,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  profileEditButtonText: {
+    color: "#0B0D12",
+    fontSize: 12,
+    fontWeight: "600",
+  },
   cardTitle: {
     fontSize: 18,
     fontWeight: "700",
@@ -1975,6 +2070,16 @@ const styles = StyleSheet.create({
     borderColor: "rgba(15, 23, 42, 0.08)",
     color: "#0B0D12",
     marginBottom: 12,
+  },
+  inputCompact: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: "rgba(15, 23, 42, 0.08)",
+    color: "#0B0D12",
+    marginBottom: 8,
   },
   unitBadge: {
     backgroundColor: "#0B0D12",
