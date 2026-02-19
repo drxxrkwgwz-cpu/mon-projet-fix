@@ -372,6 +372,39 @@ function WeekOverview({
   );
 }
 
+
+
+/* ================= PROGRESSION BLOCK ================= */
+
+function ProgressBlock({ onOpenProgress }) {
+  return (
+    <View style={styles.progressCard}>
+      <View>
+        <Text style={styles.progressTitle}>Progression</Text>
+        <Text style={styles.progressSubtitle}>
+          Visualise tes performances.
+        </Text>
+      </View>
+      <PressableScale
+        style={styles.progressButton}
+        onPress={onOpenProgress}
+      >
+        <Text style={styles.progressButtonText}>
+          Voir ma progression
+        </Text>
+      </PressableScale>
+    </View>
+  );
+}
+
+function PrimaryCTA({ label, onPress }) {
+  return (
+    <PressableScale style={styles.primaryButtonLarge} onPress={onPress}>
+      <Text style={styles.primaryButtonLargeText}>{label}</Text>
+    </PressableScale>
+  );
+}
+
 /* ================= HELPERS ================= */
 
 function InfoLine({ label, value }) {
@@ -396,6 +429,8 @@ export {
   DashboardHeader,
   ProfileCard,
   WeekOverview,
+  ProgressBlock,
+  PrimaryCTA,
   InfoLine,
   InfoPill,
 };
