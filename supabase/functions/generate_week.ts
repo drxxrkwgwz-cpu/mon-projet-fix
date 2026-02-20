@@ -80,27 +80,24 @@ function normalizeProfile(input: unknown): NormalizedProfile {
   const src = input && typeof input === "object" ? (input as JsonMap) : {};
 
   const disciplines = toStringArray(src.disciplines);
-  const frequency = Number(
-    src.frequency_per_week ?? src.sessions_per_week ?? src.frequencyPerWeek ?? src.sessionsPerWeek ?? 0,
-  );
+  const frequency = Number(src.frequency_per_week ?? 0);
 
   return {
-    sport_specialty:
-      String(src.sport_specialty ?? src.sportSpecialty ?? disciplines[0] ?? "").trim(),
+    sport_specialty: String(src.sport_specialty ?? disciplines[0] ?? "").trim(),
     disciplines,
     prs: toRecord(src.prs),
     level: String(src.level ?? "").trim(),
     frequency_per_week: Number.isFinite(frequency) && frequency > 0 ? frequency : 0,
-    duration_pref: String(src.duration_pref ?? src.durationPref ?? "").trim(),
-    training_pref: String(src.training_pref ?? src.trainingPref ?? "").trim(),
+    duration_pref: String(src.duration_pref ?? "").trim(),
+    training_pref: String(src.training_pref ?? "").trim(),
     days: toStringArray(src.days),
     equipment: toStringArray(src.equipment),
-    health_constraints: String(src.health_constraints ?? src.healthConstraints ?? "").trim(),
-    fatigue_baseline: String(src.fatigue_baseline ?? src.fatigue ?? "").trim(),
+    health_constraints: String(src.health_constraints ?? "").trim(),
+    fatigue_baseline: String(src.fatigue_baseline ?? "").trim(),
     goal: src.goal ?? null,
-    other_prefs: String(src.other_prefs ?? src.otherPrefs ?? "").trim(),
-    coach_name: String(src.coach_name ?? src.coachName ?? "Coach").trim() || "Coach",
-    coach_calls_you: String(src.coach_calls_you ?? src.coachCallsYou ?? "Athlete").trim() || "Athlete",
+    other_prefs: String(src.other_prefs ?? "").trim(),
+    coach_name: String(src.coach_name ?? "Coach").trim() || "Coach",
+    coach_calls_you: String(src.coach_calls_you ?? "Athlete").trim() || "Athlete",
   };
 }
 
