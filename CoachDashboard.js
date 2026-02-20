@@ -15,6 +15,7 @@ import {
   Vibration,
   View,
 } from "react-native";
+import { supabase } from "./src/lib/supabase";
 
 const FULL_DAY_LABELS = {
   mon: "Lundi",
@@ -126,6 +127,27 @@ const emptyCoachProfile = {
   performanceEntries: [],
 };
 
+function buildEdgeProfilePayload(coachProfile) {
+  const disciplines = Array.isArray(coachProfile?.disciplines) ? coachProfile.disciplines : [];
+  return {
+    sport_specialty: disciplines[0] || "",
+    disciplines,
+    prs: coachProfile?.prs || {},
+    level: coachProfile?.level || "",
+    frequency_per_week: Number(coachProfile?.frequencyPerWeek || 0),
+    duration_pref: coachProfile?.durationPref || "",
+    training_pref: coachProfile?.trainingPref || "",
+    days: Array.isArray(coachProfile?.days) ? coachProfile.days : [],
+    equipment: Array.isArray(coachProfile?.equipment) ? coachProfile.equipment : [],
+    health_constraints: coachProfile?.healthConstraints || "",
+    fatigue_baseline: coachProfile?.fatigue || "",
+    goal: coachProfile?.goal || null,
+    other_prefs: coachProfile?.otherPrefs || "",
+    coach_calls_you: coachProfile?.coachCallsYou || "",
+    coach_name: coachProfile?.coachName || "",
+  };
+}
+
 export default function CoachDashboard({ route }) {
   const [isProfileExpanded, setIsProfileExpanded] = useState(false);
   const [planningTab, setPlanningTab] = useState("Semaine");
@@ -134,6 +156,7 @@ export default function CoachDashboard({ route }) {
   const [selectedWeekIndex, setSelectedWeekIndex] = useState(0);
   const [selectedSession, setSelectedSession] = useState(null);
   const screenAnim = useRef(new Animated.Value(0)).current;
+  const lastGeneratedKeyRef = useRef("");
 
   useEffect(() => {
     if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -154,6 +177,30 @@ export default function CoachDashboard({ route }) {
   const coachProfile = route?.params?.coachProfile
     ? { ...emptyCoachProfile, ...route.params.coachProfile }
     : emptyCoachProfile;
+
+  useEffect(() => {
+    const freq = Number(coachProfile.frequencyPerWeek || 0);
+    if (!freq) return;
+
+    const profilePayload = buildEdgeProfilePayload(coachProfile);
+    const generationKey = JSON.stringify({ freq, profilePayload });
+    if (lastGeneratedKeyRef.current === generationKey) return;
+
+    lastGeneratedKeyRef.current = generationKey;
+
+    (async () => {
+      const { error } = await supabase.functions.invoke("generate_week", {
+        body: {
+          sessionsPerWeek: freq,
+          profile: profilePayload,
+        },
+      });
+
+      if (error) {
+        console.error("generate_week invoke error:", error);
+      }
+    })();
+  }, [coachProfile]);
 
   const initialPerformanceEntries = useMemo(
     () => coachProfile.performanceEntries || [],
