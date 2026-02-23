@@ -211,12 +211,19 @@ function getDefaultTrainingPlan(dayKey: WeekDayKey, prSeconds: number): WorkoutP
       coachAdvice: "Reste propre techniquement, termine frais.",
     },
     sun: {
-      title: "Repos",
-      isRest: true,
-      warmup: null,
-      blocks: [],
-      explanation: "",
-      coachAdvice: "",
+      title: "Technique + rappel vitesse",
+      isRest: false,
+      warmup: { duration: "18 min", content: "8 min footing léger + mobilité + gammes + 3 accélérations" },
+      blocks: [
+        {
+          name: "Rappel technique",
+          sets: [
+            { reps: 4, distance: "120m", target_time: formatSeconds((effort / 400) * 0.34 * 100), recovery: "3min", goal: "Rester relâché et précis" },
+          ],
+        },
+      ],
+      explanation: "Séance légère de rappel pour garder des sensations de vitesse.",
+      coachAdvice: "Qualité technique avant tout, pas de fatigue résiduelle.",
     },
   };
 

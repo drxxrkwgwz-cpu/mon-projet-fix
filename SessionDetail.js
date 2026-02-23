@@ -154,23 +154,38 @@ export default function SessionDetailScreen({ session, onBack, userId, onSaved }
         Alert.alert("Connexion requise", "Connecte-toi pour ajuster le plan.");
         return;
       }
-      await supabase.functions.invoke("recalculate_plan", {
+
+      const { data, error } = await supabase.functions.invoke("recalculate_plan", {
         body: {
           userId,
           basedOn: {
             date: session?.dateKey || session?.date || null,
             difficulty,
             hasSplits: showSplits,
+            splits: showSplits ? splits : [],
+            intervals: derivedIntervals || null,
           },
         },
         headers: { Authorization: `Bearer ${accessToken}` },
       });
+
+      if (error) {
+        Alert.alert("Erreur", error.message || "Recalcul impossible.");
+        return;
+      }
+
+      if (!data) {
+        Alert.alert("Erreur", "Réponse vide du serveur.");
+        return;
+      }
+
       onSaved?.();
     } catch (_e) {
+      Alert.alert("Erreur", "Recalcul impossible.");
     } finally {
       setTimeout(() => setIsRecalculating(false), 600);
     }
-  }, [difficulty, onSaved, recalcProgress, session, showSplits, userId]);
+  }, [derivedIntervals, difficulty, onSaved, recalcProgress, session, showSplits, splits, userId]);
 
   const monthLong = useMemo(
     () => ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"],
